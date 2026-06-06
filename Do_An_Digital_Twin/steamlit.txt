@@ -1,0 +1,7 @@
+.\.venv\Scripts\python.exe -m streamlit run app.py
+streamlit run app.py
+cd "C:\Users\ADMIN\Downloads\28_5_fixed_unboundlocal_pt\Do_An_Digital_Twin"
+python -m streamlit run app.py
+cd "C:\Users\ADMIN\Downloads\28_5_fixed_unboundlocal_pt\Do_An_Digital_Twin"; python -m streamlit run app.py
+cd "C:\Users\ADMIN\Downloads\28_5_fixed_unboundlocal_pt\Do_An_Digital_Twin"
+python -m streamlit run app.py

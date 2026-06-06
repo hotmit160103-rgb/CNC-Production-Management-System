@@ -1,0 +1,8 @@
+machine_id,run_id,program_tool_id,station_no,h_offset_id,h_length_mm,d_offset_id,tool_name,tool_type,tool_diameter_mm,source,setup_status,note
+EMCO_155,EMCO_TEST_01_RUN_01,1,1,,,,unknown,unknown,,not_measured,missing,Mapping tạm T1-station1; không dùng trong NC-code chính thức hiện tại
+EMCO_155,EMCO_TEST_01_RUN_01,2,2,,,,unknown,unknown,,not_measured,missing,Mapping tạm T2-station2; không dùng trong NC-code chính thức hiện tại
+EMCO_155,EMCO_TEST_01_RUN_01,3,3,H3,4.9,,FACE MILL D40,face_mill,40.0,measured,measured_partial,T3/H3 trong NC-code chính thức; H=4.9mm đo từ mặt holder/gauge line đến đỉnh dao
+EMCO_155,EMCO_TEST_01_RUN_01,10,10,H10,,,END MILL D12,end_mill,12.0,not_measured,missing_h_length,T10/H10 trong NC-code chính thức; chưa biết H length nên chưa xác nhận chắc chắn trục Z khi dùng dao này
+HURCO_VM10I,HURCO_TEST_01_RUN_01,1,1,,,,unknown,unknown,,not_measured,missing,Chưa có H offset và thông số dao thực tế; chỉ tạo mapping tạm T1-station1
+HURCO_VM10I,HURCO_TEST_01_RUN_01,2,2,,,,unknown,unknown,,not_measured,missing,Chưa có H offset và thông số dao thực tế; chỉ tạo mapping tạm T2-station2
+HURCO_VM10I,HURCO_TEST_01_RUN_01,3,3,,,,unknown,unknown,,not_measured,missing,Chưa có H offset và thông số dao thực tế; chỉ tạo mapping tạm T3-station3

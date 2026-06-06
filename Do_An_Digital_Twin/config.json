@@ -1,0 +1,311 @@
+{
+  "active_machine_id": "EMCO_155",
+
+  "machines": {
+    "EMCO_155": {
+      "machine_id": "EMCO_155",
+      "machine_name": "EMCO Concept Mill 155",
+      "machine_type": "3-axis CNC milling machine",
+      "control": "PC-Control / WinNC",
+
+    "data_confidence": {
+      "machine_specs": "confirmed_from_emco_manual",
+      "axis_travel": "confirmed_from_emco_manual",
+      "rapid_feed": "confirmed_from_emco_manual",
+      "tool_system": "confirmed_from_emco_manual",
+      "spindle_spec": "confirmed_from_manual_but_10000rpm_option_must_be_verified",
+      "g53_limits": "measured_from_real_machine",
+      "g54_offset": "measured_from_real_machine",
+      "tool_setup": "partly_measured_per_current_nc_program",
+      "cycle_time": "validated_from_video_current_nc_only"
+    },
+      "axis_travel_mm": {
+        "x": 300.0,
+        "y": 200.0,
+        "z": 300.0
+      },
+
+      "effective_z_stroke_mm": 200.0,
+
+      "machine_g53": {
+        "limits": {
+          "x": [105.0, 414.0],
+          "y": [-11.0, 195.0],
+          "z": [-27.0, 228.0]
+        },
+        "limit_status": "measured",
+        "limit_source": "Measured from EMCO Mill 155 Machine Coordinate / G53 display",
+        "validation_required": false,
+        "validation_note": "G53 axis limits measured from machine coordinate. Use these limits for offline overtravel checking."
+      },
+
+      "feed_system": {
+        "working_feed_max_mm_min": 4000.0,
+        "rapid_traverse_mm_min": {
+          "x": 7500.0,
+          "y": 7500.0,
+          "z": 7500.0
+        },
+        "feed_force_max_n": 2500.0,
+        "step_resolution_um": 1.5,
+        "source": "EMCO manual technical data"
+      },
+
+      "feed": {
+        "rapid_speed_mm_min": 7500.0,
+        "rapid_traverse_mm_min": {
+          "x": 7500.0,
+          "y": 7500.0,
+          "z": 7500.0
+        },
+        "max_working_feed_mm_min": 4000.0,
+        "source": "Compatibility block for current transformation.py"
+      },
+
+      "spindle": {
+        "speed_min_rpm": 150.0,
+        "speed_max_rpm_manual_standard": 5000.0,
+        "speed_max_rpm_machine_actual": 10000.0,
+        "active_spindle_version": "5000_or_10000",
+        "power_kw_100_percent_dc": 1.7,
+        "power_kw_60_percent_dc": 2.5,
+        "max_torque_nm": 24.0,
+        "source": "EMCO manual plus real machine confirmation"
+      },
+
+      "tool_system": {
+        "tool_stations": 10,
+        "direction_logic": true,
+        "station_angle_deg": 36.0,
+        "tool_change_time_36deg_s": 4.0,
+        "tool_change_time_180deg_s": 4.6,
+        "max_tool_diameter_mm": 70.0,
+        "max_tool_length_mm": 200.0,
+        "max_tool_weight_kg": 0.8,
+        "tool_change_note": "Tool drum selects shortest swivelling direction according to EMCO manual.",
+        "source": "EMCO manual technical data and tool system description"
+      },
+
+      "cycle_time_model": {
+        "measured_cycle_time_s": 380.0,
+        "model_status": "machine_parameter_model",
+        "note": "Measured cycle time is used only for validation. It must not be used as a global correction factor.",
+
+        "interpolator_model": {
+          "enabled": false,
+          "controller_mode": "G64",
+          "model_status": "requires_machine_identification",
+          "interpolator_time_constant_s": null,
+          "corner_blending_time_s": null,
+          "corner_blending_tolerance_mm": null,
+          "minimum_blending_angle_deg": 5.0,
+          "lookahead_blocks": null,
+          "note": "Ward based feedrate prediction requires controller specific identification. Keep disabled until T1, blending time and tolerance are measured."
+        },
+
+        "spindle_event_model": {
+          "mode": "default_or_rpm_ramp",
+          "default_start_time_s": 3.0,
+          "base_start_time_s": 0.0,
+          "accel_rpm_per_s": null,
+          "decel_rpm_per_s": null,
+          "min_event_time_s": 0.0,
+          "status": "temporary_from_current_video_need_separate_measurement",
+          "note": "Current default_start_time_s is kept from current validation. Later replace by measured spindle ramp: T_M3 = base_start_time_s + abs(S_target - S_current) / accel_rpm_per_s."
+        },
+
+        "tool_change_event_model": {
+          "mode": "shortest_station_distance",
+          "stations": 10,
+          "base_time_s": 3.85,
+          "step_time_s": 0.15,
+          "same_tool_time_s": 0.0,
+          "unknown_previous_tool_time_s": 4.0,
+          "status": "estimated_from_emco_manual_tool_change_36deg_and_180deg",
+          "note": "EMCO manual gives 4.0 s for 36 deg and 4.6 s for 180 deg. With 10 stations, 36 deg = 1 step and 180 deg = 5 steps, so step_time = (4.6 - 4.0) / (5 - 1) = 0.15 s and base_time = 4.0 - 0.15 = 3.85 s."
+        }
+      },
+
+      "table": {
+        "size_mm": [520.0, 180.0],
+        "max_table_load_kg": 20.0,
+        "t_slots": "3 x 12 mm, distance 45 mm"
+      },
+
+      "work_offset_g54": {
+        "offset_vector": {
+          "x": 214.919,
+          "y": 51.383,
+          "z": 63.329
+        },
+        "value_status": "measured",
+        "source": "Measured from EMCO Work Coordinates screen, G54 row",
+        "validation_required": false,
+        "note": "G54 offset measured on EMCO Mill 155. Use for G54 to G53 conversion."
+      }
+    },
+
+    "HURCO_VM10I": {
+      "machine_id": "HURCO_VM10I",
+      "machine_name": "Hurco VM10i",
+      "machine_type": "3-axis vertical machining center",
+      "control": "Winmax Control",
+
+      "data_confidence": {
+        "machine_specs": "confirmed_from_pdf_and_official_website",
+        "g53_limits": "temporary_assumption_from_travel",
+        "g54_offset": "temporary_placeholder",
+        "tool_setup": "required_per_run",
+        "max_working_feed": "not_available_yet",
+        "tool_change_time": "not_available_yet"
+      },
+
+      "axis_travel_mm": {
+        "x": 660.0,
+        "y": 406.0,
+        "z": 508.0
+      },
+
+      "machine_g53": {
+        "limits": {
+          "x": [0.0, 660.0],
+          "y": [0.0, 406.0],
+          "z": [-508.0, 0.0]
+        },
+        "limit_status": "temporary_assumption",
+        "limit_source": "Derived from Hurco axis travel, not measured G53 machine coordinate",
+        "validation_required": true,
+        "validation_note": "Must confirm G53_min/G53_max from Machine Coordinate after home/reference."
+      },
+
+      "feed": {
+        "rapid_traverse_mm_min": {
+          "x": 28000.0,
+          "y": 28000.0,
+          "z": 28000.0
+        },
+        "rapid_speed_mm_min": 28000.0,
+        "max_working_feed_mm_min": null,
+        "max_working_feed_status": "not_available_yet"
+      },
+
+      "spindle": {
+        "speed_min_rpm": null,
+        "speed_max_rpm": 10000,
+        "speed_status": "confirmed_from_pdf_and_official_website",
+        "power_kw": 11.0,
+        "max_torque_nm": 74.0
+      },
+
+      "tool_system": {
+        "tool_stations": 24,
+        "tool_station_status": "confirmed_from_pdf_and_official_website",
+        "tool_id_policy": "station_mode_for_test",
+        "tool_setup_required": true,
+        "tool_data_source": "tool_setup_table_per_run",
+        "tool_type": "SK40 on official website; CAT/BT40 in PDF dealer file. Need confirm on actual machine.",
+        "max_tool_diameter_mm": 80.0,
+        "max_tool_diameter_note": "Official website says 80 mm; PDF dealer file says 90 mm. Use 80 mm as safer value.",
+        "max_tool_length_mm": 250.0,
+        "max_tool_weight_kg": 7.0,
+        "tool_change_time_s": null,
+        "note": "Do not hard-code T1/T2/T3 as fixed tools. Tool ID, H offset and tool length depend on each NC program and tool setup table."
+      },
+
+      "table": {
+        "size_mm": [762.0, 406.0],
+        "max_table_load_kg": 1500.0,
+        "t_slots": "3 x 18 mm"
+      },
+
+      "work_offset_g54": {
+        "offset_vector": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "value_status": "temporary_placeholder",
+        "source": "Not measured yet",
+        "validation_required": true,
+        "note": "Must replace with actual G54 Work Offset from Hurco before validation."
+      }
+    }
+  },
+
+  "tool_setup_policy": {
+    "description": "Tool data is program-dependent and run-dependent.",
+    "nc_code_extracts": ["T", "M6", "H", "D"],
+    "machine_config_contains": ["tool_stations", "max_tool_length", "max_tool_weight"],
+    "tool_setup_table_contains": ["station_no", "h_offset_id", "h_length_mm", "tool_name", "tool_type", "tool_diameter_mm"],
+    "default_test_policy": "station_mode_for_test",
+    "warning_if_missing_tool_setup": true
+  },
+
+  "machine_g53": {
+    "rapid_speed": 7500.0,
+    "tool_change_time": 4.0,
+    "spindle_start_time": 4.0,
+    "limits": {
+      "x": [105, 414],
+      "y": [-11, 195],
+      "z": [-27, 228]
+    },
+    "max_spindle_rpm": 5000,
+    "max_feedrate_mm_min": 4000,
+    "compatibility_note": "Legacy config for current app.py. Default active machine is EMCO_155."
+  },
+
+  "work_offset_g54": {
+    "offset_vector": {
+      "x": 214.919,
+      "y": 51.383,
+      "z": 63.329
+    },
+    "note": "Legacy G54 offset copied from old config for current demo. Replace with real measured G54 before validation."
+  },
+
+  "tool_library": {
+      "2": {
+        "h_length": 4.0,
+        "status": "legacy_from_old_demo_nc"
+      },
+      "3": {
+        "h_length": 4.9,
+        "status": "measured_from_real_emco_setup",
+        "note": "H3 measured from actual EMCO setup"
+      },
+      "6": {
+        "h_length": 3.0,
+        "status": "legacy_from_old_demo_nc"
+      },
+      "7": {
+        "h_length": 3.0,
+        "status": "legacy_from_old_demo_nc"
+      },
+      "10": {
+        "h_length": 64.6,
+        "status": "measured_from_real_emco_setup",
+        "note": "H10 measured from actual EMCO setup"
+      },
+      "13": {
+        "h_length": 2.0,
+        "status": "legacy_from_old_demo_nc"
+      },
+      "14": {
+        "h_length": 2.0,
+        "status": "legacy_from_old_demo_nc"
+      },
+      "20": {
+        "h_length": 2.0,
+        "status": "legacy_from_old_demo_nc"
+      },
+      "23": {
+        "h_length": 3.0,
+        "status": "legacy_from_old_demo_nc"
+      },
+      "25": {
+        "h_length": 4.0,
+        "status": "legacy_from_old_demo_nc"
+      }
+    }
+}

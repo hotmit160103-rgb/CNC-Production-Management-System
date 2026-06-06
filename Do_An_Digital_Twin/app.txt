@@ -1,0 +1,277 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import json
+
+from src.engine import GCodeEngine
+from transformation import DigitalTwinTransformer
+from streamlit_plotly_events import plotly_events
+
+# --- CẤU HÌNH GIAO DIỆN (MATCH VỚI ẢNH 1 & 2) ---
+st.set_page_config(layout="wide", page_title="Hệ thống giám sát CNC", page_icon="⚙️")
+
+@st.cache_data
+def load_config():
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Lỗi đọc file cấu hình: {e}")
+        return None
+
+config = load_config()
+
+if 'clicked_line' not in st.session_state:
+    st.session_state['clicked_line'] = -1
+
+# ==========================================
+# LUỒNG XỬ LÝ LÕI (GIỮ NGUYÊN THUẬT TOÁN - FIX LỖI TÀNG HÌNH ĐỒ THỊ)
+# ==========================================
+@st.cache_data(show_spinner=False)
+def process_nc_data(content, _config):
+    engine = GCodeEngine(_config)
+    transformer = DigitalTwinTransformer(_config)
+    
+    source_lines = []
+    flat_logs = []
+
+    for i, line in enumerate(content.splitlines(), start=1):
+        source_lines.append({"line_number": i, "raw_line": line})
+        cmd = engine.parse_line(line)
+        block_dict = {"tokens": cmd if isinstance(cmd, dict) else {}, "line_number": i, "raw_line": line}
+        
+        t_start = transformer.state.get("current_time", 0.0)
+        segments = transformer.apply_block(block_dict)
+        t_end = transformer.state.get("current_time", 0.0)
+
+        for seg in segments:
+            if seg.get("type") == "motion" and "trajectory_slide" in seg:
+                pts = seg["trajectory_slide"]
+                n_pts = len(pts)
+                for idx, pt in enumerate(pts):
+                    # FIX LỖI 1: Nội suy thời gian tịnh tiến để Plotly vẽ được đường chéo
+                    point_time = pt.get("t", seg.get("end_time", t_end))
+                    
+                    flat_logs.append({
+                    "time": float(point_time),
+
+    # Machine Slide Position trong G53: dùng cho Graph 1 và overtravel
+    "axis_x": pt.get("X"),
+    "axis_y": pt.get("Y"),
+    "axis_z": pt.get("Z"),
+
+    # Tool Tip Position trong G53: dùng để mở rộng phân tích toolpath
+    "tip_x": pt.get("tip_x"),
+    "tip_y": pt.get("tip_y"),
+    "tip_z": pt.get("tip_z"),
+
+    "line_number": pt.get("line_number", i),
+    "raw_line": pt.get("raw_line", line),
+
+    "motion_mode": pt.get("motion_mode", seg.get("motion_mode")),
+    "is_air_time": pt.get("is_air_time", seg.get("is_air_time", False)),
+
+    "feedrate": float(transformer.state.get("feedrate", 0)),
+    "rpm": float(pt.get("rpm", transformer.state.get("rpm", 0))),
+    "tool_id": str(pt.get("tool_id", transformer.state.get("active_tool_id", "None"))),
+    "H_length": float(transformer.state.get("H_length", 0.0)),
+
+    "ot_x": bool(pt.get("ot_x", False)),
+    "ot_y": bool(pt.get("ot_y", False)),
+    "ot_z": bool(pt.get("ot_z", False)),
+
+    "ot_amount_x": float(pt.get("ot_amount_x", 0.0)),
+    "ot_amount_y": float(pt.get("ot_amount_y", 0.0)),
+    "ot_amount_z": float(pt.get("ot_amount_z", 0.0))
+})
+            else:
+                # Xử lý Event (Thời gian trôi nhưng tọa độ đứng im)
+                event_times = [t_start, t_end] if t_end > t_start else [t_start]
+                for t in event_times:
+                    flat_logs.append({
+                        "time": float(t), 
+                        "axis_x": None, "axis_y": None, "axis_z": None, # Sẽ được Pandas ffill vá sau
+                        "line_number": i, "raw_line": line,
+                        "feedrate": float(transformer.state.get("feedrate", 0)),
+                        "rpm": float(transformer.state.get("rpm", 0)),
+                        "tool_id": str(transformer.state.get("active_tool_id", "None")),
+                        "ot_x": False, "ot_y": False, "ot_z": False, 
+                        "ot_amount_x": 0.0, "ot_amount_y": 0.0, "ot_amount_z": 0.0
+                    })
+
+    # Chuyển đổi thành DataFrame
+    df_source_nc = pd.DataFrame(source_lines)
+    df = pd.DataFrame(flat_logs)
+
+    if not df.empty:
+        # 1. Ép trục thời gian luôn tiến lên
+        df = df.sort_values(by=["time", "line_number"]).reset_index(drop=True)
+
+        # 2. Xử lý "Vùng tối đầu chuỗi" (Leading NaNs)
+        for col in ['axis_x', 'axis_y', 'axis_z']:
+            if pd.isna(df.loc[0, col]):
+                df.loc[0, col] = 0.0  # Điểm neo Machine Home
+
+        # 3. Vá lỗ hổng bằng ffill và bfill
+        df[['axis_x', 'axis_y', 'axis_z']] = df[['axis_x', 'axis_y', 'axis_z']].ffill().bfill()
+        
+        # 4. Xử lý các thông số phụ
+        df[['feedrate', 'rpm']] = df[['feedrate', 'rpm']].fillna(0)
+        
+    return df_source_nc, df
+
+# ==========================================
+# SIDEBAR (MATCH ẢNH 1)
+# ==========================================
+st.sidebar.markdown("## Hệ thống Giám sát CNC")
+st.sidebar.info("Phân tích thông số gia công CNC")
+nc_files = st.sidebar.file_uploader("Nạp tệp NC / G-code (Hỗ trợ đa tệp)", accept_multiple_files=True)
+
+if not nc_files:
+    st.title("Digital Twin Dashboard")
+    st.info("💡 Vui lòng nạp tệp NC để bắt đầu quá trình mô phỏng và kiểm tra hành trình.")
+    st.stop()
+
+# ==========================================
+# RENDER GIAO DIỆN CHÍNH
+# ==========================================
+for uploaded in nc_files:
+    content = uploaded.getvalue().decode("utf-8", errors="ignore")
+    
+    with st.spinner("Đang chạy mô phỏng Digital Twin..."):
+        df_source_nc, df = process_nc_data(content, config)
+
+    if df.empty:
+        st.warning(f"Tệp {uploaded.name} không chứa dữ liệu quỹ đạo hợp lệ!")
+        continue
+
+    # --- KHU VỰC TITLE & METRICS (MATCH ẢNH 2) ---
+    st.markdown(f"### 📊 Phân tích: `{uploaded.name}`")
+    
+    total_time = df['time'].max()
+    total_pts = len(df)
+    df_errors = df[(df['ot_x']) | (df['ot_y']) | (df['ot_z'])]
+    error_lines_count = len(df_errors['line_number'].unique())
+    
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Tổng thời gian gia công", f"{total_time:.2f} s")
+    m2.metric("Số điểm nội suy (Quỹ đạo)", f"{total_pts} pts")
+    if error_lines_count > 0:
+        m3.metric("Dòng lệnh vi phạm", f"{error_lines_count} lines", delta="Va chạm", delta_color="inverse")
+        m4.metric("Trạng thái", "NGUY HIỂM", delta="Dừng máy", delta_color="inverse")
+    else:
+        m3.metric("Dòng lệnh vi phạm", "0 lines")
+        m4.metric("Trạng thái", "AN TOÀN", delta="Passed", delta_color="normal")
+
+    st.divider()
+
+    # --- GRAPH 1: GIÁM SÁT G53 (MATCH ẢNH 3) ---
+    st.markdown("#### Graph 1: Giám sát Hành trình X / Y / Z (G53)")
+    limits = config["machine_g53"]["limits"]
+    colors = {'X': '#EF553B', 'Y': '#00CC96', 'Z': '#636EFA'}
+    
+    g1_c1, g1_c2, g1_c3 = st.columns(3)
+    g1_cols = [g1_c1, g1_c2, g1_c3]
+    
+    for idx, ax in enumerate(['X', 'Y', 'Z']):
+        with g1_cols[idx]:
+            fig = go.Figure()
+            col_name = f"axis_{ax.lower()}"
+            
+            # BƯỚC 2: LỌC BỎ CÁC ĐIỂM DỊ THƯỜNG TRƯỚC KHI VẼ
+            if col_name in df.columns:
+                # Ép kiểu sang số thực cứng và bỏ qua các dòng không có thời gian
+                plot_df = df.copy()
+                plot_df[col_name] = pd.to_numeric(plot_df[col_name], errors='coerce')
+                plot_df = plot_df.dropna(subset=[col_name, 'time'])
+
+                # 1. Đường chạy dao (Line)
+                fig.add_trace(go.Scatter(
+                    x=plot_df["time"], 
+                    y=plot_df[col_name], 
+                    mode="lines",
+                    name=f"Hành trình {ax}", 
+                    line=dict(color=colors[ax], width=2.5),
+                    connectgaps=True, # BẮT BUỘC: Ép Plotly nối điểm qua các vùng rỗng
+                    customdata=plot_df[["line_number", "raw_line"]],
+                    hovertemplate="Time: %{x:.2f}s<br>Pos: %{y:.3f} mm<br>Dòng %{customdata[0]}: %{customdata[1]}<extra></extra>"
+                ))
+
+                # 2. Vạch giới hạn phần cứng (Lấy từ Config)
+                l_min, l_max = limits[ax.lower()]
+                fig.add_hline(y=l_max, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"Max {ax}: {l_max}")
+                fig.add_hline(y=l_min, line_dash="dash", line_color="rgba(255,0,0,0.6)", annotation_text=f"Min {ax}: {l_min}")
+
+                # 3. Đánh dấu điểm lỗi (Nếu ot_x / y / z == True)
+                ot_col = f"ot_{ax.lower()}"
+                if ot_col in plot_df.columns:
+                    df_error = plot_df[plot_df[ot_col] == True]
+                    if not df_error.empty:
+                        fig.add_trace(go.Scatter(
+                            x=df_error["time"], y=df_error[col_name], mode="markers",
+                            name=f"Lỗi {ax}", marker=dict(color="red", symbol="x", size=8),
+                            hoverinfo="skip"
+                        ))
+
+                # 4. Định dạng biểu đồ
+                fig.update_layout(
+                    title=f"Giám sát trục {ax}",
+                    xaxis_title="Thời gian (s)", 
+                    yaxis_title=f"Vị trí (mm)",
+                    height=280, margin=dict(l=10, r=10, t=35, b=10),
+                    hovermode="x unified", template="plotly_dark"
+                )
+                
+                # Render đồ thị
+                st.plotly_chart(fig, use_container_width=True)
+
+    # --- GRAPH 2 & 3: THÔNG SỐ VẬN HÀNH (MATCH ẢNH 4) ---
+    st.divider()
+    g2_c1, g2_c2 = st.columns(2)
+    with g2_c1:
+        st.markdown("#### Graph 2: Biểu đồ Feedrate (inch/min)")
+        st.plotly_chart(px.area(df, x="time", y="feedrate", template="plotly_dark", height=280), use_container_width=True)
+    with g2_c2:
+        st.markdown("#### Graph 3: Tốc độ Trục chính (RPM)")
+        st.plotly_chart(px.line(df, x="time", y="rpm", template="plotly_dark", height=280), use_container_width=True)
+
+    # --- KHU VỰC DATA & NC CODE (MATCH ẢNH 5) ---
+    st.divider()
+    bot_c1, bot_c2, bot_c3 = st.columns([3, 4, 3])
+    
+    with bot_c1:
+        st.markdown("#### Lịch trình Tool")
+        # Ép Tool_id thành string để Plotly vẽ dạng Category phân tầng rõ ràng
+        df['tool_str'] = "T" + df['tool_id'].astype(str)
+        fig_tool = px.scatter(df, x="time", y="tool_str", color="tool_str", template="plotly_dark", height=400)
+        fig_tool.update_traces(marker=dict(size=8, opacity=0.7))
+        fig_tool.update_layout(yaxis_title="Dao", xaxis_title="Thời gian (s)", showlegend=False)
+        st.plotly_chart(fig_tool, use_container_width=True)
+
+    with bot_c2:
+        st.markdown("#### Nhật ký nội suy (Data Logs)")
+        st.dataframe(df[['time', 'axis_x', 'axis_y', 'axis_z', 'feedrate', 'rpm', 'tool_id']], height=400, use_container_width=True)
+
+    with bot_c3:
+        st.markdown("#### NC-code")
+        error_lines = set(df_errors['line_number'].unique()) if not df_errors.empty else set()
+        html_lines = []
+        clicked_ln = st.session_state.get('clicked_line', -1)
+        
+        for _, row in df_source_nc.iterrows():
+            ln = int(row["line_number"])
+            code_text = row["raw_line"]
+            bg_style = ""
+            if ln == clicked_ln:
+                bg_style = "background-color: #ffd700; color: black; font-weight: bold;" 
+            elif ln in error_lines:
+                bg_style = "background-color: rgba(255, 0, 0, 0.4);" 
+                
+            line_html = f"<div id='line_{ln}' style='padding:2px 8px; font-family:monospace; {bg_style} border-bottom:1px solid #444;'>{code_text}</div>"
+            html_lines.append(line_html)
+
+        st.markdown(
+            f"<div style='height:400px; overflow-y:auto; border:1px solid #555; border-radius:5px; background-color: #0e1117;'>{''.join(html_lines)}</div>",
+            unsafe_allow_html=True
+        )

@@ -1,0 +1,197 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import json
+from streamlit_plotly_events import plotly_events # Thư viện mới để bắt sự kiện click
+
+from src.engine import GCodeEngine
+from src.simulator import Simulator
+
+# Cấu hình giao diện Dashboard
+st.set_page_config(layout="wide", page_title="Hệ thống giám sát CNC")
+
+# ==========================================
+# 1. TẢI CẤU HÌNH MÁY (CONFIG)
+# ==========================================
+def load_config():
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Lỗi đọc file cấu hình: {e}")
+        return None
+
+config = load_config()
+
+# Khởi tạo session_state để lưu dòng code đang được click chuột
+if 'clicked_line' not in st.session_state:
+    st.session_state['clicked_line'] = -1
+
+# ==========================================
+# 2. THANH SIDEBAR NẠP DỮ LIỆU
+# ==========================================
+st.sidebar.title("Hệ thống Giám sát CNC")
+nc_files = st.sidebar.file_uploader("Nạp tệp NC / G-code", type=None, accept_multiple_files=True)
+
+# ==========================================
+# 3. LUỒNG XỬ LÝ CHÍNH
+# ==========================================
+st.title("Digital Twin Dashboard - Overtravel Analysis")
+
+if not nc_files:
+    st.info("💡 Vui lòng nạp tệp NC để bắt đầu quá trình mô phỏng.")
+else:
+    for uploaded in nc_files:
+        raw_data = uploaded.getvalue()
+        try:
+            content = raw_data.decode("utf-8")
+        except UnicodeDecodeError:
+            content = raw_data.decode("latin-1")
+
+        # Khởi tạo Engine và Simulator
+        engine = GCodeEngine(config)
+        sim = Simulator(engine, config)
+
+        for i, line in enumerate(content.splitlines(), start=1):
+            cmd = engine.parse_line(line)
+            if isinstance(cmd, dict):
+                sim.calculate_step(cmd, line, i)
+
+        # -------------------------------------------------------------
+        # STEP A: CHUẨN HÓA DATASET
+        # -------------------------------------------------------------
+        df = pd.DataFrame(sim.logs)
+        if df.empty:
+            st.warning(f"Không có dữ liệu: {uploaded.name}")
+            continue
+
+        # Đổi tên cột cho chuẩn xác nếu Dataset của bạn đang dùng tên khác
+        rename_map = {"t_sec": "time", "X": "axis_x", "Y": "axis_y", "Z": "axis_z"}
+        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+        
+        # Sắp xếp theo thời gian để đồ thị không bị vẽ ngược
+        if "time" in df.columns:
+            df = df.sort_values(by="time").reset_index(drop=True)
+
+        st.divider()
+        st.subheader(f"📊 Kết quả phân tích: {uploaded.name}")
+
+        col1, col2 = st.columns([6, 4]) # Chia tỷ lệ cột 6:4 để Graph 1 to hơn
+
+        # -------------------------------------------------------------
+        # STEP B & F: GRAPH 1 (AXIS TRAVEL) VÀ BẮT SỰ KIỆN CLICK
+        # -------------------------------------------------------------
+        with col1:
+            st.markdown("#### Graph 1: Giám sát Hành trình X / Y / Z (G53)")
+            limits = config["machine_g53"]["limits"]
+            colors = {'X': '#EF553B', 'Y': '#00CC96', 'Z': '#636EFA'}
+            fig1 = go.Figure()
+
+            for ax in ['X', 'Y', 'Z']:
+                # 1. Vẽ đường chạy dao
+                fig1.add_trace(go.Scatter(
+                    x=df["time"], y=df[f"axis_{ax.lower()}"], mode="lines", name=f"Trục {ax}",
+                    line=dict(color=colors[ax], width=2),
+                    customdata=df[["line_number", "raw_line"]],
+                    hovertemplate="<b>%{x:.2f}s</b> | Tọa độ: %{y:.3f}<br>Dòng %{customdata[0]}: %{customdata[1]}<extra></extra>"
+                ))
+
+                # 2. Vẽ đường kẻ đứt Limit (Sửa lỗi dùng dải màu nền trước đây)
+                l_min, l_max = limits[ax.lower()]
+                fig1.add_hline(y=l_max, line_dash="dash", line_color=colors[ax], opacity=0.4)
+                fig1.add_hline(y=l_min, line_dash="dash", line_color=colors[ax], opacity=0.4)
+
+                # 3. Đánh dấu lỗi bằng Marker X màu đỏ
+                if f"ot_{ax.lower()}" in df.columns:
+                    df_ot = df[df[f"ot_{ax.lower()}"] == True]
+                    if not df_ot.empty:
+                        fig1.add_trace(go.Scatter(
+                            x=df_ot["time"], y=df_ot[f"axis_{ax.lower()}"], mode="markers", name=f"LỖI {ax}",
+                            marker=dict(color="red", symbol="x", size=8),
+                            customdata=df_ot[["line_number", "raw_line", f"ot_amount_{ax.lower()}"]],
+                            hovertemplate="🚨 <b>VƯỢT MAX/MIN!</b><br>Dòng %{customdata[0]}: %{customdata[1]}<br>Lố: %{customdata[2]} mm<extra></extra>"
+                        ))
+
+            fig1.update_layout(hovermode="x unified", height=450, template="plotly_dark", margin=dict(l=10, r=10, t=30, b=10))
+            
+            # Hiển thị đồ thị và Bắt sự kiện Click chuột (Step F)
+            selected_points = plotly_events(fig1, click_event=True, hover_event=False)
+            
+            # Nếu người dùng vừa click vào đồ thị
+            if selected_points:
+                clicked_time = selected_points[0]['x']
+                # Tìm dòng NC gần nhất với thời gian click
+                closest_row = df.iloc[(df['time'] - clicked_time).abs().argsort()[:1]]
+                st.session_state['clicked_line'] = closest_row['line_number'].values[0]
+                st.rerun() # Tải lại trang ngay lập tức để tô màu NC Viewer
+
+        # -------------------------------------------------------------
+        # STEP C: TẠO BẢNG CẢNH BÁO OVERTRAVEL SUMMARY
+        # -------------------------------------------------------------
+        with col2:
+            st.markdown("#### 🚨 Bảng Phân tích Lỗi (Overtravel Warnings)")
+            if all(col in df.columns for col in ['ot_x', 'ot_y', 'ot_z']):
+                df_errors = df[(df['ot_x']) | (df['ot_y']) | (df['ot_z'])]
+                if not df_errors.empty:
+                    # Gộp lỗi theo dòng lệnh để không bị Spam
+                    warning_summary = df_errors.groupby(['line_number', 'raw_line']).agg(
+                        time_start=('time', 'min'),
+                        max_lo_X=('ot_amount_x', lambda x: round(abs(x).max(), 3)),
+                        max_lo_Y=('ot_amount_y', lambda x: round(abs(x).max(), 3)),
+                        max_lo_Z=('ot_amount_z', lambda x: round(abs(x).max(), 3))
+                    ).reset_index()
+                    st.error(f"Phát hiện {len(warning_summary)} dòng lệnh gây va chạm!")
+                    st.dataframe(warning_summary, use_container_width=True, height=350)
+                else:
+                    st.success("Tuyệt vời! Máy chạy an toàn 100%, không có va chạm.")
+            else:
+                st.warning("Dữ liệu chưa có cột cảnh báo quá hành trình (ot_x, ot_y, ot_z).")
+
+        st.divider()
+
+        # -------------------------------------------------------------
+        # STEP D & E: NC VIEWER VÀ CÁC ĐỒ THỊ PHỤ
+        # -------------------------------------------------------------
+        c_left, c_right = st.columns([5, 5])
+        
+        with c_left:
+            st.markdown("#### Graph 2: Biểu đồ Feedrate")
+            if "feedrate" in df.columns:
+                st.plotly_chart(px.area(df, x="time", y="feedrate", template="plotly_dark", height=300), use_container_width=True)
+            
+            st.markdown("#### Graph 3: Thời gian gia công tích lũy")
+            st.plotly_chart(px.line(df, x="time", y="time", template="plotly_dark", height=300), use_container_width=True)
+
+        with c_right:
+            st.markdown("#### Trình xem mã NC (Highlight đồng bộ)")
+            
+            # Gom nhóm lỗi: Nếu 1 dòng có bất kỳ điểm nào lỗi -> Dòng đó lỗi (Step E)
+            error_map = {}
+            if not df_errors.empty:
+                error_map = df_errors['line_number'].unique()
+
+            df_nc = df[['line_number', 'raw_line']].drop_duplicates()
+            html_lines = []
+            
+            clicked_ln = st.session_state.get('clicked_line', -1)
+
+            for _, row in df_nc.iterrows():
+                ln = int(row["line_number"])
+                code_text = row["raw_line"]
+                
+                is_error = ln in error_map
+                is_selected = (ln == clicked_ln)
+                
+                # Logic tô màu
+                bg_style = ""
+                if is_selected:
+                    bg_style = "background-color: #ffe066; color: black; font-weight: bold;" # Màu vàng khi click
+                elif is_error:
+                    bg_style = "background-color: rgba(255, 0, 0, 0.3);" # Màu đỏ mờ khi có lỗi
+                    
+                line_html = f"<div id='line_{ln}' style='padding:4px 8px; font-family:monospace; {bg_style} border-bottom:1px solid #333;'><b>{ln:04d}:</b> {code_text}</div>"
+                html_lines.append(line_html)
+
+            # Khung hiển thị G-code có Scroll
+            st.markdown(f"<div style='height:650px; overflow-y:auto; border:1px solid #ddd; padding:5px;'>{''.join(html_lines)}</div>", unsafe_allow_html=True)
