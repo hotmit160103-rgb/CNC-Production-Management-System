@@ -30,7 +30,12 @@ st.set_page_config(
 @st.cache_data
 def load_config():
     try:
-        with open("config.json", "r", encoding="utf-8") as f:
+        from pathlib import Path
+
+        BASE_DIR = Path(__file__).parent
+        CONFIG_PATH = BASE_DIR / "config.json"
+
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         st.error(f"Configuration file loading error: {e}")
