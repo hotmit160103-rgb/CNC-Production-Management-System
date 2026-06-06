@@ -129,7 +129,7 @@ st.sidebar.info("Phân tích thông số gia công CNC")
 nc_files = st.sidebar.file_uploader("Nạp tệp NC / G-code (Hỗ trợ đa tệp)", accept_multiple_files=True)
 
 if not nc_files:
-    st.title("Digital Twin Dashboard")
+    st.title("CNC PRODUCTION MANAGEMENT SYSTEM")
     st.info("💡 Vui lòng nạp tệp NC để bắt đầu quá trình mô phỏng và kiểm tra hành trình.")
     st.stop()
 

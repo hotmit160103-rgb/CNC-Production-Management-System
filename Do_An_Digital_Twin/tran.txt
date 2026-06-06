@@ -37,7 +37,7 @@ nc_files = st.sidebar.file_uploader("Nạp tệp NC / G-code", type=None, accept
 # ==========================================
 # 3. LUỒNG XỬ LÝ CHÍNH
 # ==========================================
-st.title("Digital Twin Dashboard - Overtravel Analysis")
+st.title("CNC PRODUCTION MANAGEMENT SYSTEM")
 
 if not nc_files:
     st.info("💡 Vui lòng nạp tệp NC để bắt đầu quá trình mô phỏng.")

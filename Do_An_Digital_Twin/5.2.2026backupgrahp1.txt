@@ -38,7 +38,7 @@ nc_files = st.sidebar.file_uploader(
 # ==========================================
 # 3. LUỒNG XỬ LÝ CHÍNH
 # ==========================================
-st.title("Digital Twin Dashboard: Giám sát Hành trình Trục")
+st.title("CNC PRODUCTION MANAGEMENT SYSTEM")
 
 if not nc_files:
     st.info("💡 Vui lòng nạp tệp NC để bắt đầu quá trình mô phỏng và kiểm tra hành trình.")

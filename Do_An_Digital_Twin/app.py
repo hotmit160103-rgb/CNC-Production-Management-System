@@ -367,7 +367,7 @@ cost_cfg = {
 }
 
 if not nc_files:
-    st.title("Digital Twin Dashboard")
+    st.title("CNC PRODUCTION MANAGEMENT SYSTEM")
     st.info("Import an NC program to start the production analysis.")
     st.stop()
 
