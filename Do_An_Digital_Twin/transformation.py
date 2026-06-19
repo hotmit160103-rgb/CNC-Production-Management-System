@@ -75,35 +75,35 @@ class DigitalTwinTransformer:
         rapid_cfg = feed_cfg.get("rapid_traverse_mm_min", None)
 
         if isinstance(rapid_cfg, dict):
-            rapid_x = float(rapid_cfg.get("x", 7500.0))
-            rapid_y = float(rapid_cfg.get("y", 7500.0))
-            rapid_z = float(rapid_cfg.get("z", 7500.0))
+            rapid_x = float(rapid_cfg.get("x") or 7500.0)
+            rapid_y = float(rapid_cfg.get("y") or 7500.0)
+            rapid_z = float(rapid_cfg.get("z") or 7500.0)
             rapid_speed_default = max(rapid_x, rapid_y, rapid_z)
         elif rapid_cfg is not None:
             rapid_x = rapid_y = rapid_z = float(rapid_cfg)
             rapid_speed_default = float(rapid_cfg)
         else:
-            rapid_speed_default = float(feed_cfg.get("rapid_speed_mm_min", 7500.0))
+            rapid_speed_default = float(feed_cfg.get("rapid_speed_mm_min") or 7500.0)
             rapid_x = rapid_y = rapid_z = rapid_speed_default
 
         max_working_feed = float(
-            feed_cfg.get(
-                "working_feed_max_mm_min",
-                feed_cfg.get("max_working_feed_mm_min", 4000.0)
-            )
+            feed_cfg.get("working_feed_max_mm_min")
+            or feed_cfg.get("max_working_feed_mm_min")
+            or 4000.0
         )
 
-        max_spindle_rpm = (
+        max_spindle_rpm_val = (
             spindle_cfg.get("speed_max_rpm_machine_actual")
             or spindle_cfg.get("speed_max_rpm")
             or spindle_cfg.get("speed_max_rpm_manual_standard")
+            or 5000.0
         )
+        max_spindle_rpm = float(max_spindle_rpm_val)
 
         tool_change_time_default = float(
-            tool_system_cfg.get(
-                "tool_change_time_s",
-                tool_system_cfg.get("tool_change_time_36deg_s", 4.0)
-            )
+            tool_system_cfg.get("tool_change_time_s")
+            or tool_system_cfg.get("tool_change_time_36deg_s")
+            or 4.0
         )
 
         self.machine_params = {
@@ -118,7 +118,7 @@ class DigitalTwinTransformer:
             # Giá trị fallback. Bước sau M3/M6 sẽ đọc từ cycle_time_model nếu có.
             "tool_change_time": tool_change_time_default,
             "spindle_start_time": float(
-                config.get("machine_g53", {}).get("spindle_start_time", 4.0)
+                config.get("machine_g53", {}).get("spindle_start_time") or 4.0
             ),
             "program_stop_time": 0.0,
 
