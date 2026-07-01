@@ -11,12 +11,12 @@ from analytics import (
     build_microblock_report,
 )
 from utils import (
-    inject_css, load_config, process_nc_data, make_arrow_safe_display_df,
+    inject_css, load_config, process_nc_data,
     render_sidebar, render_sidebar_summary,
-    page_header, section_label, status_banner, empty_state,
+    page_header, section_label, status_banner, callout_box, empty_state,
     apply_plotly_defaults, format_cycle_time,
     AXIS_COLORS, LIMIT_LINE_COLOR,
-    INK, BODY, MUTED, CANVAS, PRIMARY, DANGER, SUCCESS, HAIRLINE, SHADOW,
+    INK, BODY, MUTED, CANVAS, PRIMARY, DANGER, SUCCESS, WARNING, HAIRLINE, SHADOW,
     DANGER_LIGHT, DANGER_BORDER,
 )
 
@@ -335,17 +335,80 @@ for uploaded in nc_files:
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     with st.expander("▸ CAM Trajectory Quality Notes"):
         df_micro = build_microblock_report(df)
+
         if df_micro.empty:
             st.info("No microblock data available.")
+        elif len(df_micro) == 1 and str(df_micro.iloc[0]["Metric"]) == "Valid Motion Blocks":
+            st.info(str(df_micro.iloc[0]["Value"]))
         else:
-            st.dataframe(
-                make_arrow_safe_display_df(df_micro),
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Metric": st.column_config.TextColumn("Metric", width="large"),
-                    "Value":  st.column_config.TextColumn("Value", width="medium"),
-                },
+            micro = dict(zip(df_micro["Metric"], df_micro["Value"]))
+
+            total_blocks = int(micro.get("Total Motion Blocks", 0))
+            short_05      = int(micro.get("Blocks Shorter than 0.5 mm", 0))
+            short_01      = int(micro.get("Blocks Shorter than 0.1 mm", 0))
+            avg_len_str   = str(micro.get("Average Block Length", "0 mm"))
+            min_len_str   = str(micro.get("Minimum Block Length", "0 mm"))
+            ratio_str     = str(micro.get("Micro-block Ratio below 0.5 mm", "0 %"))
+            assessment    = str(micro.get("CAM Trajectory Assessment", ""))
+
+            try:
+                micro_ratio = float(ratio_str.replace("%", "").strip())
+            except ValueError:
+                micro_ratio = 0.0
+
+            # ── Block-length distribution bar chart ─────────────────────────
+            block_labels = ["Total Motion Blocks", "Blocks < 0.5 mm", "Blocks < 0.1 mm"]
+            block_values = [total_blocks, short_05, short_01]
+            block_colors = [PRIMARY, WARNING, DANGER]
+
+            fig_micro = go.Figure(go.Bar(
+                x=block_values, y=block_labels,
+                orientation="h",
+                marker_color=block_colors,
+                text=[f"{v:,}" for v in block_values],
+                textposition="outside",
+                textfont=dict(size=11, color="#222222"),
+                hovertemplate="%{y}: %{x:,} blocks<extra></extra>",
+            ))
+            apply_plotly_defaults(fig_micro, height=200, margin=dict(l=8, r=52, t=8, b=8))
+            fig_micro.update_layout(xaxis_title="Block count", yaxis_title="", showlegend=False)
+            fig_micro.update_yaxes(tickfont=dict(size=12, color="#111111", family="Inter, -apple-system, sans-serif"))
+            st.plotly_chart(fig_micro, use_container_width=True, config={"displayModeBar": False})
+
+            # ── Average / minimum block length stat chips ───────────────────
+            chip_col1, chip_col2 = st.columns(2)
+            with chip_col1:
+                callout_box("Average Block Length", avg_len_str)
+            with chip_col2:
+                callout_box("Minimum Block Length", min_len_str)
+
+            # ── Micro-block ratio assessment card (3-state, same pattern as
+            #    the Tool Life Monitoring status card on the Cycle Time page) ──
+            if micro_ratio > 30:
+                mb_bg, mb_border, mb_color = DANGER_LIGHT, DANGER_BORDER, DANGER
+            elif micro_ratio > 10:
+                mb_bg, mb_border, mb_color = "#fff4e5", "#f2c27b", WARNING
+            else:
+                mb_bg, mb_border, mb_color = "#edf7f2", "#a3d9bc", SUCCESS
+
+            st.markdown(
+                f"""
+                <div style="
+                    background:{mb_bg};
+                    border:1px solid {mb_border};
+                    border-radius:12px;
+                    padding:13px 16px;
+                    margin:14px 0 4px 0;
+                ">
+                    <div style="font-size:13px;font-weight:700;color:{mb_color};margin-bottom:3px;">
+                        Micro-block Ratio (&lt; 0.5 mm): {micro_ratio:.2f}%
+                    </div>
+                    <div style="font-size:12px;color:#3f3f3f;line-height:1.45;">
+                        {assessment}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
     st.divider()

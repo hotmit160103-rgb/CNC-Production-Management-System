@@ -1,12 +1,20 @@
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from analytics import build_time_breakdown, build_event_diagnostics
+from analytics import (
+    build_time_breakdown,
+    build_event_diagnostics,
+    extract_cutting_tool_ids,
+    build_tool_life_summary,
+    build_tool_life_warning_blocks,
+)
 from utils import (
     inject_css, load_config, process_nc_data, make_arrow_safe_display_df,
     render_sidebar, render_sidebar_summary,
     page_header, section_label, callout_box, empty_state,
     progress_bar_row, apply_plotly_defaults, format_cycle_time,
+    status_badge,
     TIME_CATEGORY_COLORS, INK, BODY, MUTED, CANVAS, HAIRLINE,
     PRIMARY, SUCCESS, DANGER, SHADOW,
 )
@@ -111,7 +119,7 @@ for uploaded in nc_files:
             xaxis=dict(visible=False, range=[0, 100]),
             yaxis=dict(visible=False),
             paper_bgcolor=CANVAS, plot_bgcolor=CANVAS,
-            font=dict(family="Inter, -apple-system, sans-serif", size=11, color="#333333"),
+            font=dict(family="Inter, -apple-system, sans-serif", size=11, color=BODY),
         )
         st.plotly_chart(bar_fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -144,6 +152,242 @@ for uploaded in nc_files:
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
         callout_box("Total Cycle Time", time_val, time_unit)
+
+    # ── Tool Life Monitoring (full width) ─────────────────────────────────────
+    st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+
+    with st.expander("Tool Life Monitoring", expanded=True):
+        cutting_tool_ids = extract_cutting_tool_ids(df)
+
+        if not cutting_tool_ids:
+            st.info("No active cutting tool detected in this NC program.")
+        else:
+            st.markdown(
+                "<div style='font-size:12px;color:#6a6a6a;margin-bottom:10px;'>"
+                "Enter remaining tool life before machining."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+
+            remaining_life_hours = {}
+
+            input_cols = st.columns(min(6, len(cutting_tool_ids)))
+
+            for idx_tool, tool_id in enumerate(cutting_tool_ids):
+                with input_cols[idx_tool % len(input_cols)]:
+                    remaining_life_hours[tool_id] = st.number_input(
+                        f"T{tool_id} remaining life (h)",
+                        min_value=0.0,
+                        value=20.0,
+                        step=0.5,
+                        format="%.2f",
+                        key=f"tool_life_{selected_machine}_{uploaded.name}_{tool_id}",
+                    )
+
+            tool_life_summary = build_tool_life_summary(df, remaining_life_hours)
+            tool_life_warnings = build_tool_life_warning_blocks(df, remaining_life_hours)
+
+            if not tool_life_summary.empty:
+                worst_status = str(tool_life_summary["Status"].iloc[0]).upper()
+
+                if worst_status == "FAIL":
+                    status_bg = "#fdf1f0"
+                    status_border = "#f5b8b4"
+                    status_color = "#e2483b"
+                    status_title = "Tool life is not enough"
+                    status_msg = "At least one tool may fail before this NC program finishes."
+                elif worst_status == "CRITICAL":
+                    status_bg = "#fff4e5"
+                    status_border = "#f2c27b"
+                    status_color = "#c97b10"
+                    status_title = "Critical remaining tool life"
+                    status_msg = "At least one tool will finish with less than 10% remaining life."
+                elif worst_status == "WARNING":
+                    status_bg = "#fff8e8"
+                    status_border = "#efd38a"
+                    status_color = "#a66d00"
+                    status_title = "Low remaining tool life"
+                    status_msg = "At least one tool will finish with less than 20% remaining life."
+                else:
+                    status_bg = "#edf7f2"
+                    status_border = "#a3d9bc"
+                    status_color = "#1a8a50"
+                    status_title = "Tool life check passed"
+                    status_msg = "All detected cutting tools can complete this NC program."
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        background:{status_bg};
+                        border:1px solid {status_border};
+                        border-radius:12px;
+                        padding:13px 16px;
+                        margin:4px 0 14px 0;
+                    ">
+                        <div style="
+                            font-size:13px;
+                            font-weight:700;
+                            color:{status_color};
+                            margin-bottom:3px;
+                        ">
+                            {status_title}
+                        </div>
+                        <div style="
+                            font-size:12px;
+                            color:#3f3f3f;
+                            line-height:1.45;
+                        ">
+                            {status_msg}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # ── Tool life usage chart ───────────────────────────────
+                chart_df = tool_life_summary.copy()
+
+                chart_df["Used Display (%)"] = pd.to_numeric(
+                    chart_df["Life Used (%)"],
+                    errors="coerce"
+                ).fillna(0.0).clip(lower=0.0, upper=100.0)
+
+                chart_df["Remaining Display (%)"] = pd.to_numeric(
+                    chart_df["Remaining (%)"],
+                    errors="coerce"
+                ).fillna(0.0).clip(lower=0.0, upper=100.0)
+
+                fig_tool_life = go.Figure()
+
+                fig_tool_life.add_trace(go.Bar(
+                    y=chart_df["Tool"],
+                    x=chart_df["Used Display (%)"],
+                    name="Used in program",
+                    orientation="h",
+                    marker_color=PRIMARY,
+                    customdata=chart_df[[
+                        "Cutting Time in Program (h)",
+                        "Life Used (%)",
+                        "Status"
+                    ]],
+                    hovertemplate=(
+                        "Tool: %{y}<br>"
+                        "Used: %{customdata[0]:.4f} h<br>"
+                        "Life used: %{customdata[1]:.2f}%<br>"
+                        "Status: %{customdata[2]}"
+                        "<extra></extra>"
+                    ),
+                ))
+
+                fig_tool_life.add_trace(go.Bar(
+                    y=chart_df["Tool"],
+                    x=chart_df["Remaining Display (%)"],
+                    name="Remaining after run",
+                    orientation="h",
+                    marker_color=SUCCESS,
+                    customdata=chart_df[[
+                        "Remaining After (h)",
+                        "Remaining (%)",
+                        "Status"
+                    ]],
+                    hovertemplate=(
+                        "Tool: %{y}<br>"
+                        "Remaining: %{customdata[0]:.4f} h<br>"
+                        "Remaining: %{customdata[1]:.2f}%<br>"
+                        "Status: %{customdata[2]}"
+                        "<extra></extra>"
+                    ),
+                ))
+
+                chart_height = max(210, 80 + 44 * len(chart_df))
+
+                apply_plotly_defaults(
+                    fig_tool_life,
+                    title="Tool Life Usage",
+                    height=chart_height,
+                    margin=dict(l=8, r=8, t=38, b=8),
+                )
+
+                fig_tool_life.update_layout(
+                    barmode="stack",
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1,
+                        font=dict(size=10),
+                    ),
+                    xaxis=dict(
+                        title="Tool life (%)",
+                        range=[0, 100],
+                        ticksuffix="%",
+                    ),
+                    yaxis=dict(title=""),
+                )
+
+                st.plotly_chart(
+                    fig_tool_life,
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+
+                # ── Compact summary table ───────────────────────────────
+                th_style = (
+                    "font-size:10px;font-weight:700;text-transform:uppercase;"
+                    "letter-spacing:0.06em;color:#6a6a6a;padding:8px 10px 8px 0;"
+                    "border-bottom:1.5px solid #e8eaed;"
+                )
+                td_bold_style = "font-size:13px;padding:9px 10px 9px 0;border-bottom:1px solid #f0f2f5;font-weight:600;color:#1a1a1a;"
+                td_muted_style = "font-size:13px;padding:9px 10px 9px 0;border-bottom:1px solid #f0f2f5;color:#6a6a6a;"
+                td_base_style = "font-size:13px;padding:9px 10px 9px 0;border-bottom:1px solid #f0f2f5;"
+
+                summary_rows_html = []
+                for _, row in tool_life_summary.iterrows():
+                    summary_rows_html.append(f"""
+                    <tr>
+                        <td style="{td_bold_style}">{row['Tool']}</td>
+                        <td style="{td_muted_style}">{float(row['Remaining After (h)']):.2f} h</td>
+                        <td style="{td_base_style}">{status_badge(str(row['Status']))}</td>
+                    </tr>""")
+
+                st.markdown(f"""
+                <table style="width:100%;border-collapse:collapse;font-family:'Inter',sans-serif;margin-top:6px;">
+                    <thead>
+                        <tr>
+                            <th style="{th_style}text-align:left;">TOOL</th>
+                            <th style="{th_style}text-align:left;">REMAINING AFTER</th>
+                            <th style="{th_style}text-align:left;">STATUS</th>
+                        </tr>
+                    </thead>
+                    <tbody>{"".join(summary_rows_html)}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+
+            if not tool_life_warnings.empty:
+                st.markdown(
+                    "<div style='font-size:12px;font-weight:700;color:#3f3f3f;"
+                    "margin-top:12px;margin-bottom:6px;'>"
+                    "Warning / Critical / Failure Blocks"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+                warning_cols = [
+                    "Tool",
+                    "Level",
+                    "Line",
+                    "NC Block",
+                    "Remaining Life (h)",
+                    "Threshold",
+                ]
+
+                st.dataframe(
+                    make_arrow_safe_display_df(tool_life_warnings[warning_cols]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     # ── M-code Event Diagnostics ──────────────────────────────────────────────
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)

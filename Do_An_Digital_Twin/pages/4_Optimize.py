@@ -1,3 +1,4 @@
+import plotly.graph_objects as go
 import streamlit as st
 
 from analytics import (
@@ -8,8 +9,8 @@ from utils import (
     inject_css, load_config, process_nc_data, get_cost_cfg,
     render_sidebar, render_sidebar_summary,
     page_header, section_label, callout_box, empty_state,
-    progress_bar_row, priority_badge, recommendation_card,
-    format_cycle_time,
+    recommendation_card,
+    format_cycle_time, apply_plotly_defaults,
     INK, BODY, MUTED, CANVAS, PRIMARY, DANGER, SUCCESS, WARNING,
     DANGER_LIGHT, WARNING_LIGHT, SURFACE_STRONG,
     TIME_CATEGORY_COLORS,
@@ -110,7 +111,7 @@ for uploaded in nc_files:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Potential time savings with progress bars ─────────────────────────────
+    # ── Potential time savings chart ──────────────────────────────────────────
     section_label("Potential Time Savings", margin_top=0)
 
     priority_color_map = {
@@ -129,6 +130,7 @@ for uploaded in nc_files:
         "Reduce Micro-block Density":                      "#5b6fa8",
     }
 
+    savings_chart_rows = []
     for _, row in df_recs.iterrows():
         item     = str(row.get("Optimization Item", ""))
         priority = str(row.get("Priority", "Low"))
@@ -138,23 +140,36 @@ for uploaded in nc_files:
             continue
 
         bar_color = category_color_map.get(item, priority_color_map.get(priority, MUTED))
-        pct = min((saving_s / total_time * 100.0) if total_time > 0 else 0.0, 100.0)
+        savings_chart_rows.append((item, saving_s, priority, bar_color))
 
-        st.markdown(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;
-                    margin-bottom:4px;">
-            <span style="font-size:13px;color:{BODY};">{item}</span>
-            <div style="display:flex;align-items:center;gap:10px;">
-                <span style="font-size:12px;color:{MUTED};">{saving_s:.1f} s</span>
-                {priority_badge(priority)}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown(f"""
-        <div style="background:#f2f2f2;border-radius:9999px;height:6px;margin-bottom:14px;">
-            <div style="width:{pct:.1f}%;background:{bar_color};border-radius:9999px;height:6px;"></div>
-        </div>
-        """, unsafe_allow_html=True)
+    if savings_chart_rows:
+        savings_chart_rows.sort(key=lambda r: r[1])  # ascending: largest saving renders at the top of the h-bar
+
+        items_sorted     = [r[0] for r in savings_chart_rows]
+        savings_sorted   = [r[1] for r in savings_chart_rows]
+        colors_sorted    = [r[3] for r in savings_chart_rows]
+        priorities_sorted = [r[2] for r in savings_chart_rows]
+
+        fig_savings = go.Figure(go.Bar(
+            x=savings_sorted, y=items_sorted,
+            orientation="h",
+            marker_color=colors_sorted,
+            text=[f"{s:.1f} s" for s in savings_sorted],
+            textposition="outside",
+            textfont=dict(size=11, color="#222222"),
+            customdata=priorities_sorted,
+            hovertemplate="%{y}<br>Saving: %{x:.2f} s/part<br>Priority: %{customdata}<extra></extra>",
+        ))
+        apply_plotly_defaults(
+            fig_savings,
+            height=max(200, len(savings_chart_rows) * 46 + 40),
+            margin=dict(l=8, r=64, t=8, b=8),
+        )
+        fig_savings.update_layout(xaxis_title="Estimated Saving (s/part)", yaxis_title="", showlegend=False)
+        fig_savings.update_yaxes(tickfont=dict(size=12, color="#111111", family="Inter, -apple-system, sans-serif"))
+        st.plotly_chart(fig_savings, use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.info("No time-saving opportunities identified for this NC program.")
 
     # ── Recommendation cards ──────────────────────────────────────────────────
     section_label("Recommendations", margin_top=8)

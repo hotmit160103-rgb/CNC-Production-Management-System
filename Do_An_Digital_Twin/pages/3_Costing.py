@@ -144,9 +144,9 @@ for uploaded in nc_files:
         pie.update_layout(
             height=220, margin=dict(l=8, r=8, t=8, b=8),
             paper_bgcolor=CANVAS,
-            font=dict(family="Inter, -apple-system, sans-serif", size=11, color="#333333"),
+            font=dict(family="Inter, -apple-system, sans-serif", size=11, color=BODY),
             legend=dict(
-                font=dict(size=11, family="Inter, -apple-system, sans-serif", color="#333333"),
+                font=dict(size=11, family="Inter, -apple-system, sans-serif", color=BODY),
                 orientation="h", y=-0.1,
             ),
             showlegend=True,

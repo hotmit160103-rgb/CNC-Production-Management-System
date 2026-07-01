@@ -704,9 +704,9 @@ html, body, [class*="css"] {
 /* ── Expanders ── */
 [data-testid="stExpander"] {
     border: 1px solid #e8eaed !important;
-    border-radius: 10px !important;
+    border-radius: 14px !important;
     background: #ffffff !important;
-    box-shadow: rgba(0,0,0,0.02) 0 1px 4px !important;
+    box-shadow: rgba(0,0,0,.02) 0 0 0 1px, rgba(0,0,0,.04) 0 2px 6px 0, rgba(0,0,0,.08) 0 4px 8px 0 !important;
 }
 [data-testid="stExpander"] summary {
     font-size: 13px;
@@ -736,6 +736,10 @@ html, body, [class*="css"] {
     background: transparent !important;
     border: none !important;
     display: contents !important;
+}
+[data-testid="stMain"] [data-testid="stNumberInputContainer"] div[data-baseweb="base-input"] {
+    background: #ffffff !important;
+    color-scheme: light !important;
 }
 [data-testid="stMain"] [data-testid="stNumberInputField"] {
     flex: 1 !important;
@@ -1477,6 +1481,23 @@ def priority_badge(priority: str) -> str:
         f'<span style="background:{bg};color:{color};border-radius:9999px;'
         f'padding:2px 10px;font-size:10px;font-weight:700;'
         f'text-transform:uppercase;letter-spacing:0.05em;">{priority}</span>'
+    )
+
+
+_STATUS_BADGE_STYLES = {
+    "FAIL":     (DANGER_LIGHT,   DANGER),
+    "CRITICAL": (WARNING_LIGHT,  WARNING),
+    "WARNING":  (WARNING_LIGHT,  WARNING),
+    "SAFE":     (SUCCESS_LIGHT,  SUCCESS),
+    "NOT SET":  (SURFACE_STRONG, MUTED),
+}
+
+def status_badge(status: str) -> str:
+    bg, color = _STATUS_BADGE_STYLES.get(status, (SURFACE_STRONG, MUTED))
+    return (
+        f'<span style="background:{bg};color:{color};border-radius:9999px;'
+        f'padding:2px 10px;font-size:10px;font-weight:700;'
+        f'text-transform:uppercase;letter-spacing:0.05em;">{status}</span>'
     )
 
 
