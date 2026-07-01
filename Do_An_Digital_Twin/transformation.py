@@ -1007,6 +1007,264 @@ class DigitalTwinTransformer:
         return bool(cfg.get("enabled", False))
 
 
+    def _safe_axis_min(self, unit_vec, limits):
+        """
+        Quy đổi giới hạn theo từng trục thành giới hạn theo phương chạy dao.
+
+        Ví dụ:
+            v_path <= Vx_max / |ux|
+            a_path <= Ax_max / |ux|
+            j_path <= Jx_max / |ux|
+        """
+        values = []
+
+        for axis, u in unit_vec.items():
+            u_abs = abs(float(u))
+            lim = float(limits.get(axis, 0.0) or 0.0)
+
+            if u_abs > 1e-9 and lim > 0:
+                values.append(lim / u_abs)
+
+        return min(values) if values else float("inf")
+
+
+    def _dominant_axis_by_direction(self, unit_vec):
+        """Chọn trục có thành phần chuyển động lớn nhất."""
+        return max(unit_vec.keys(), key=lambda axis: abs(float(unit_vec[axis])))
+
+
+    def _dominant_axis_by_time(self, axis_times):
+        """Chọn trục có thời gian chuyển động lâu nhất."""
+        return max(axis_times.keys(), key=lambda axis: float(axis_times[axis]))
+
+
+    def _get_axis_interpolator_params(self):
+        """
+        Đọc thông số Ward/FIR theo từng trục từ config.json.
+
+        Đường dẫn config:
+            cycle_time_model -> interpolator_model -> axis_parameters
+        """
+        cfg = self._get_interpolator_cfg()
+        raw_axis_params = cfg.get("axis_parameters", {}) or {}
+
+        axis_params = {}
+
+        for axis in ["x", "y", "z"]:
+            p = raw_axis_params.get(axis, {}) or {}
+            axis_params[axis] = {
+                "T1_s": float(p.get("T1_s", 0.0) or 0.0),
+                "Td_s": float(p.get("Td_s", 0.0) or 0.0),
+                "Jmax_mm_s3": float(p.get("Jmax_mm_s3", 0.0) or 0.0),
+                "Amax_mm_s2": float(p.get("Amax_mm_s2", 0.0) or 0.0),
+            }
+
+        return axis_params
+
+
+    def _path_metrics_from_trajectory(self, points):
+        """
+        Tính L, vectơ hướng tuyệt đối và lượng chạy từng trục từ trajectory_slide.
+
+        Với line thẳng: unit_abs gần tương đương |ux|, |uy|, |uz|.
+        Với cung đã nội suy: unit_abs là tỷ lệ đóng góp trục trên toàn cung.
+        """
+        if not points or len(points) < 2:
+            return (
+                0.0,
+                {"x": 0.0, "y": 0.0, "z": 0.0},
+                {"x": 0.0, "y": 0.0, "z": 0.0},
+            )
+
+        total_length = 0.0
+        axis_abs_motion = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        for i in range(len(points) - 1):
+            dx = float(points[i + 1]["X"]) - float(points[i]["X"])
+            dy = float(points[i + 1]["Y"]) - float(points[i]["Y"])
+            dz = float(points[i + 1]["Z"]) - float(points[i]["Z"])
+
+            segment_length = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+            total_length += segment_length
+
+            axis_abs_motion["x"] += abs(dx)
+            axis_abs_motion["y"] += abs(dy)
+            axis_abs_motion["z"] += abs(dz)
+
+        if total_length <= 1e-9:
+            unit_abs = {"x": 0.0, "y": 0.0, "z": 0.0}
+        else:
+            unit_abs = {
+                axis: axis_abs_motion[axis] / total_length
+                for axis in ["x", "y", "z"]
+            }
+
+        return float(total_length), unit_abs, axis_abs_motion
+
+
+    def _get_working_feed_limit_by_axis_mm_min(self):
+        """
+        Lấy giới hạn feed làm việc theo trục.
+        Nếu config chỉ có một số chung thì dùng chung cho X/Y/Z.
+        """
+        feed_cfg = (
+            self.machine_cfg.get("feed_system")
+            or self.machine_cfg.get("feed")
+            or {}
+        )
+
+        raw_limit = (
+            feed_cfg.get("working_feed_max_mm_min")
+            or feed_cfg.get("max_working_feed_mm_min")
+            or self.machine_params.get("max_working_feed_mm_min")
+            or 4000.0
+        )
+
+        if isinstance(raw_limit, dict):
+            return {
+                "x": float(raw_limit.get("x", 4000.0) or 4000.0),
+                "y": float(raw_limit.get("y", 4000.0) or 4000.0),
+                "z": float(raw_limit.get("z", 4000.0) or 4000.0),
+            }
+
+        limit = float(raw_limit)
+        return {"x": limit, "y": limit, "z": limit}
+
+
+    def _compute_ward_fir_duration_for_motion(self, points, commanded_feed_mm_min, is_air):
+        """
+        Tính thời gian motion theo mô hình Ward/FIR tối thiểu.
+
+        G01/G02/G03:
+            T = L / v_target + Td_eff
+            T1_eff = sqrt(v_target / J_path)
+            Td_eff = 3 * T1_eff
+
+        G00:
+            T = max(Tx, Ty, Tz) + Td_axis
+        """
+        path_length_mm, unit_vec_abs, axis_abs_motion = self._path_metrics_from_trajectory(points)
+
+        if path_length_mm <= 1e-9:
+            return {
+                "duration_s": 0.0,
+                "basic_time_s": 0.0,
+                "fir_delay_s": 0.0,
+                "path_length_mm": 0.0,
+                "scheduled_feed_mm_min": 0.0,
+                "dominant_axis": None,
+                "A_path_mm_s2": None,
+                "J_path_mm_s3": None,
+                "T1_eff_s": None,
+                "model_status": "zero_length_motion",
+            }
+
+        axis_params = self._get_axis_interpolator_params()
+        interpolator_enabled = self._is_interpolator_model_enabled()
+
+        # -----------------------------------------------------
+        # G00 rapid: các trục chạy đồng thời, lấy trục lâu nhất
+        # -----------------------------------------------------
+        if is_air:
+            rapid_mm_min = {
+                "x": max(float(self.machine_params.get("rapid_speed_x", 7500.0)), 1e-6),
+                "y": max(float(self.machine_params.get("rapid_speed_y", 7500.0)), 1e-6),
+                "z": max(float(self.machine_params.get("rapid_speed_z", 7500.0)), 1e-6),
+            }
+
+            axis_times = {
+                "x": axis_abs_motion["x"] / rapid_mm_min["x"] * 60.0,
+                "y": axis_abs_motion["y"] / rapid_mm_min["y"] * 60.0,
+                "z": axis_abs_motion["z"] / rapid_mm_min["z"] * 60.0,
+            }
+
+            dominant_axis = self._dominant_axis_by_time(axis_times)
+            basic_time_s = float(axis_times[dominant_axis])
+
+            fir_delay_s = 0.0
+            t1_eff_s = None
+
+            if interpolator_enabled and dominant_axis in axis_params:
+                fir_delay_s = float(axis_params[dominant_axis].get("Td_s", 0.0) or 0.0)
+                t1_eff_s = float(axis_params[dominant_axis].get("T1_s", 0.0) or 0.0)
+
+            return {
+                "duration_s": float(basic_time_s + fir_delay_s),
+                "basic_time_s": basic_time_s,
+                "fir_delay_s": fir_delay_s,
+                "path_length_mm": float(path_length_mm),
+                "scheduled_feed_mm_min": float(max(rapid_mm_min.values())),
+                "dominant_axis": dominant_axis.upper(),
+                "A_path_mm_s2": None,
+                "J_path_mm_s3": None,
+                "T1_eff_s": t1_eff_s,
+                "model_status": "G00 rapid with Ward/FIR delay" if fir_delay_s > 0 else "G00 rapid axis-synchronised",
+            }
+
+        # -----------------------------------------------------
+        # G01/G02/G03: feed motion
+        # -----------------------------------------------------
+        commanded_feed_mm_min = max(float(commanded_feed_mm_min), 1e-6)
+        v_cmd_mm_s = commanded_feed_mm_min / 60.0
+
+        axis_feed_limits_mm_min = self._get_working_feed_limit_by_axis_mm_min()
+        axis_feed_limits_mm_s = {
+            axis: float(value) / 60.0
+            for axis, value in axis_feed_limits_mm_min.items()
+        }
+
+        axis_A_limits = {
+            axis: axis_params.get(axis, {}).get("Amax_mm_s2", 0.0)
+            for axis in ["x", "y", "z"]
+        }
+        axis_J_limits = {
+            axis: axis_params.get(axis, {}).get("Jmax_mm_s3", 0.0)
+            for axis in ["x", "y", "z"]
+        }
+
+        v_axis_limit_mm_s = self._safe_axis_min(unit_vec_abs, axis_feed_limits_mm_s)
+        A_path_mm_s2 = self._safe_axis_min(unit_vec_abs, axis_A_limits)
+        J_path_mm_s3 = self._safe_axis_min(unit_vec_abs, axis_J_limits)
+
+        v_target_mm_s = min(v_cmd_mm_s, v_axis_limit_mm_s)
+        v_target_mm_s = max(float(v_target_mm_s), 1e-9)
+
+        basic_time_s = path_length_mm / v_target_mm_s
+
+        dominant_axis = self._dominant_axis_by_direction(unit_vec_abs)
+        fir_delay_s = 0.0
+        t1_eff_s = None
+
+        if interpolator_enabled and axis_params:
+            t1_values = [
+                float(p.get("T1_s", 0.0) or 0.0)
+                for p in axis_params.values()
+                if float(p.get("T1_s", 0.0) or 0.0) > 0
+            ]
+
+            if math.isfinite(J_path_mm_s3) and J_path_mm_s3 > 0 and t1_values:
+                t1_eff_s = math.sqrt(v_target_mm_s / J_path_mm_s3)
+                t1_eff_s = max(t1_eff_s, min(t1_values))
+                t1_eff_s = min(t1_eff_s, max(t1_values))
+                fir_delay_s = 3.0 * t1_eff_s
+            elif dominant_axis in axis_params:
+                t1_eff_s = float(axis_params[dominant_axis].get("T1_s", 0.0) or 0.0)
+                fir_delay_s = float(axis_params[dominant_axis].get("Td_s", 0.0) or 0.0)
+
+        return {
+            "duration_s": float(basic_time_s + fir_delay_s),
+            "basic_time_s": float(basic_time_s),
+            "fir_delay_s": float(fir_delay_s),
+            "path_length_mm": float(path_length_mm),
+            "scheduled_feed_mm_min": float(v_target_mm_s * 60.0),
+            "dominant_axis": dominant_axis.upper(),
+            "A_path_mm_s2": None if not math.isfinite(A_path_mm_s2) else float(A_path_mm_s2),
+            "J_path_mm_s3": None if not math.isfinite(J_path_mm_s3) else float(J_path_mm_s3),
+            "T1_eff_s": t1_eff_s,
+            "model_status": "G01/G02/G03 with Ward/FIR dynamic T1" if fir_delay_s > 0 else "Basic distance over feed",
+        }
+
+
     def _compute_corner_angle_rad(self, previous_vector, next_vector):
         """
         Compute the geometric transition angle between two consecutive motion vectors.
@@ -1373,18 +1631,41 @@ class DigitalTwinTransformer:
 
         elif seg["type"] == "motion":
             is_air = (motion_mode == 0)
-
             seg["is_air_time"] = is_air
-
-            if is_air:
-                v_raw = self.machine_params.get("rapid_speed", 100.0)
-            else:
-                v_raw = self.state["feedrate"]
-
-            v = max(float(v_raw), 0.001)
 
             points = seg["trajectory_slide"]
             current_t = start_time
+
+            if is_air:
+                commanded_feed_for_time = self.machine_params.get("rapid_speed", 100.0)
+            else:
+                commanded_feed_for_time = self.state["feedrate"]
+
+            time_info = self._compute_ward_fir_duration_for_motion(
+                points=points,
+                commanded_feed_mm_min=commanded_feed_for_time,
+                is_air=is_air
+            )
+
+            total_duration_s = float(time_info.get("duration_s", 0.0))
+            path_length_mm = float(time_info.get("path_length_mm", 0.0))
+            display_feed_mm_min = float(
+                time_info.get(
+                    "scheduled_feed_mm_min",
+                    self.state.get("feedrate", 0.0)
+                )
+            )
+
+            # Ghi metadata cho segment để app/analytics có thể đọc
+            seg["cycle_time_model_status"] = time_info.get("model_status")
+            seg["path_length_mm"] = round(path_length_mm, 6)
+            seg["basic_time_s"] = round(float(time_info.get("basic_time_s", 0.0)), 6)
+            seg["ward_fir_delay_s"] = round(float(time_info.get("fir_delay_s", 0.0)), 6)
+            seg["dominant_axis"] = time_info.get("dominant_axis")
+            seg["scheduled_feed_mm_min"] = round(display_feed_mm_min, 4)
+            seg["A_path_mm_s2"] = time_info.get("A_path_mm_s2")
+            seg["J_path_mm_s3"] = time_info.get("J_path_mm_s3")
+            seg["T1_eff_s"] = time_info.get("T1_eff_s")
 
             if len(points) > 0:
                 points[0].update({
@@ -1394,21 +1675,26 @@ class DigitalTwinTransformer:
                     "motion_mode": motion_mode,
                     "tool_id": tool_id,
                     "is_air_time": is_air,
-                    "feedrate": self.state["feedrate"],
-                    "rpm": self.state["actual_spindle_rpm"] if self.state["spindle_on"] else 0.0
+                    "feedrate": display_feed_mm_min,
+                    "rpm": self.state["actual_spindle_rpm"] if self.state["spindle_on"] else 0.0,
+                    "cycle_time_model_status": seg["cycle_time_model_status"],
+                    "ward_fir_delay_s": seg["ward_fir_delay_s"],
+                    "dominant_axis": seg["dominant_axis"]
                 })
 
+            # Phân bố tổng thời gian của block xuống các điểm nội suy
+            # theo tỷ lệ chiều dài hình học từng đoạn nhỏ.
             for i in range(len(points) - 1):
                 dx = points[i + 1]["X"] - points[i]["X"]
                 dy = points[i + 1]["Y"] - points[i]["Y"]
                 dz = points[i + 1]["Z"] - points[i]["Z"]
 
-                dist = np.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
+                dist = math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
 
-                if is_air:
-                    dt_point = self._rapid_segment_time_sec(points[i], points[i + 1])
+                if path_length_mm > 1e-9:
+                    dt_point = total_duration_s * (dist / path_length_mm)
                 else:
-                    dt_point = (dist / v) * 60.0
+                    dt_point = 0.0
 
                 current_t += dt_point
 
@@ -1419,14 +1705,17 @@ class DigitalTwinTransformer:
                     "motion_mode": motion_mode,
                     "tool_id": tool_id,
                     "is_air_time": is_air,
-                    "feedrate": self.state["feedrate"],
-                    "rpm": self.state["actual_spindle_rpm"] if self.state["spindle_on"] else 0.0
+                    "feedrate": display_feed_mm_min,
+                    "rpm": self.state["actual_spindle_rpm"] if self.state["spindle_on"] else 0.0,
+                    "cycle_time_model_status": seg["cycle_time_model_status"],
+                    "ward_fir_delay_s": seg["ward_fir_delay_s"],
+                    "dominant_axis": seg["dominant_axis"]
                 })
 
             seg["start_time"] = round(start_time, 4)
-            self.state["current_time"] = current_t
-            seg["end_time"] = round(current_t, 4)
-            seg["duration"] = round(current_t - start_time, 4)
+            self.state["current_time"] = start_time + total_duration_s
+            seg["end_time"] = round(self.state["current_time"], 4)
+            seg["duration"] = round(total_duration_s, 4)
 
     # =====================================================================
     # STEP 7: KIỂM TRA QUÁ HÀNH TRÌNH

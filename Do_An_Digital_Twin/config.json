@@ -153,10 +153,11 @@
 
       "data_confidence": {
         "machine_specs": "confirmed_from_pdf_and_official_website",
-        "g53_limits": "temporary_assumption_from_travel",
+        "g53_limits": "measured_from_real_machine",
         "g54_offset": "temporary_placeholder",
         "tool_setup": "required_per_run",
-        "max_working_feed": "not_available_yet",
+        "max_working_feed": "temporary_equal_to_rapid_until_verified",
+        "ward_fir_parameters": "identified_from_hurco_measurement",
         "tool_change_time": "not_available_yet"
       },
 
@@ -172,10 +173,10 @@
           "y": [0.0, 406.0],
           "z": [-508.0, 0.0]
         },
-        "limit_status": "temporary_assumption",
-        "limit_source": "Derived from Hurco axis travel, not measured G53 machine coordinate",
-        "validation_required": true,
-        "validation_note": "Must confirm G53_min/G53_max from Machine Coordinate after home/reference."
+        "limit_status": "measured",
+        "limit_source": "Measured from Hurco VM10i Machine Coordinate / G53 display",
+        "validation_required": false,
+        "validation_note": "G53 axis limits measured from real Hurco machine. Use these limits for offline overtravel checking."
       },
 
       "feed": {
@@ -185,8 +186,8 @@
           "z": 28000.0
         },
         "rapid_speed_mm_min": 28000.0,
-        "max_working_feed_mm_min": null,
-        "max_working_feed_status": "not_available_yet"
+        "max_working_feed_mm_min": 28000,
+        "max_working_feed_status": "temporary_equal_to_rapid_until_verified"
       },
 
       "spindle": {
@@ -211,6 +212,58 @@
         "tool_change_time_s": null,
         "note": "Do not hard-code T1/T2/T3 as fixed tools. Tool ID, H offset and tool length depend on each NC program and tool setup table."
       },
+      "cycle_time_model": {
+        "model_status": "ward_fir_identified_from_hurco_measurement",
+        "note": "Hurco VM10i Ward/FIR parameters identified from measured feedrate response. Use WARD_BASE only for cycle-time prediction.",
+
+        "interpolator_model": {
+          "enabled": true,
+          "controller_mode": "WinMax",
+          "model_type": "WARD_3FIR",
+          "fir_order": 3,
+          "corner_blending_tolerance_mm": 0.01,
+          "minimum_blending_angle_deg": 5.0,
+          "lookahead_blocks": null,
+
+          "axis_parameters": {
+            "x": {
+              "T1_s": 0.0666667,
+              "Td_s": 0.2000000,
+              "Jmax_mm_s3": 10608.33,
+              "Amax_mm_s2": 459.38
+            },
+            "y": {
+              "T1_s": 0.1111111,
+              "Td_s": 0.3333333,
+              "Jmax_mm_s3": 6750.00,
+              "Amax_mm_s2": 450.00
+            },
+            "z": {
+              "T1_s": 0.0597701,
+              "Td_s": 0.1793103,
+              "Jmax_mm_s3": 13193.58,
+              "Amax_mm_s2": 543.75
+            }
+          }
+        },
+
+        "spindle_event_model": {
+          "mode": "default_or_rpm_ramp",
+          "default_start_time_s": 3.0,
+          "base_start_time_s": 0.0,
+          "accel_rpm_per_s": null,
+          "decel_rpm_per_s": null,
+          "min_event_time_s": 0.0,
+          "status": "temporary_need_hurco_measurement"
+        },
+
+        "tool_change_event_model": {
+          "mode": "default_fixed_time",
+          "tool_change_time_s": null,
+          "status": "not_measured_yet",
+          "note": "Replace with measured Hurco tool change time."
+        }
+      },      
 
       "table": {
         "size_mm": [762.0, 406.0],

@@ -949,3 +949,384 @@ def build_saving_recommendations(
         })
 
     return pd.DataFrame(rows, columns=columns)
+
+# ── Tool life monitoring ─────────────────────────────────────────────────────
+
+def _normalize_tool_id(value) -> str:
+    """Return a compact tool id string suitable for UI keys and grouping."""
+    if value is None:
+        return ""
+
+    text = str(value).strip()
+
+    if text == "" or text.lower() in {"none", "nan", "nat"}:
+        return ""
+
+    if text.upper().startswith("T"):
+        text = text[1:].strip()
+
+    try:
+        numeric = float(text)
+        if numeric.is_integer():
+            return str(int(numeric))
+    except Exception:
+        pass
+
+    return text
+
+
+def _is_truthy_bool(value) -> bool:
+    """Robust conversion for bool-like values that may come from Pandas/CSV/UI."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"true", "1", "yes", "y"}
+
+
+def _is_cutting_motion_row(row) -> bool:
+    """
+    Identify rows that should accumulate tool life.
+
+    Current scope:
+    - G01/G02/G03 interpolation rows only
+    - not rapid / air-time
+    - not M-code event rows
+    """
+    if str(row.get("event_type", "")).strip() != "":
+        return False
+
+    if _is_truthy_bool(row.get("is_air_time", False)):
+        return False
+
+    motion_mode = str(row.get("motion_mode", "")).strip().upper()
+    raw_line = str(row.get("raw_line", "")).upper()
+
+    try:
+        mm = int(float(motion_mode))
+    except Exception:
+        mm = None
+
+    if mm in [1, 2, 3]:
+        return True
+
+    return bool(re.search(r"\bG0?1\b|\bG0?2\b|\bG0?3\b", raw_line))
+
+
+
+
+def _extract_t_code_from_raw_line(raw_line) -> str:
+    """
+    Extract T-code from one NC block.
+
+    Used only as a fallback when the simulation log does not carry a valid
+    active tool_id on cutting rows. Preference is still given to the simulated
+    active tool state and M6 next_tool_id.
+    """
+    raw = str(raw_line or "").upper()
+    match = re.search(r"(?<![A-Z0-9])T\s*0*(\d+)(?!\d)", raw)
+    if not match:
+        return ""
+    return _normalize_tool_id(match.group(1))
+
+def _tool_life_cutting_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Return point-level rows that contribute to tool-life usage."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    required = {"time", "tool_id"}
+    if not required.issubset(df.columns):
+        return pd.DataFrame()
+
+    work_df = add_duration_column(df)
+
+    if work_df.empty:
+        return pd.DataFrame()
+
+    if "event_type" not in work_df.columns:
+        work_df["event_type"] = ""
+
+    if "is_air_time" not in work_df.columns:
+        work_df["is_air_time"] = False
+
+    if "motion_mode" not in work_df.columns:
+        work_df["motion_mode"] = ""
+
+    # Prefer the active tool_id produced by the transformer.
+    explicit_tool_id = work_df["tool_id"].map(_normalize_tool_id)
+
+    # Fallback: derive active tool from M6 / T-code sequence when old logs
+    # have tool_id = None on motion rows. This keeps the UI usable without
+    # changing transformation.py.
+    if "next_tool_id" in work_df.columns:
+        next_tool_from_m6 = work_df["next_tool_id"].map(_normalize_tool_id)
+    else:
+        next_tool_from_m6 = pd.Series("", index=work_df.index)
+
+    if "event_type" in work_df.columns:
+        is_m6_event = work_df["event_type"].astype(str).str.upper().str.strip().isin(["M6", "M06"])
+    else:
+        is_m6_event = pd.Series(False, index=work_df.index)
+
+    if "raw_line" in work_df.columns:
+        t_from_raw = work_df["raw_line"].map(_extract_t_code_from_raw_line)
+        raw_has_m6 = work_df["raw_line"].astype(str).str.upper().str.contains(
+            r"(?<![A-Z0-9])M0*6(?!\d)",
+            regex=True
+        )
+    else:
+        t_from_raw = pd.Series("", index=work_df.index)
+        raw_has_m6 = pd.Series(False, index=work_df.index)
+
+    tool_marker = pd.Series("", index=work_df.index, dtype="object")
+
+    # M6 is the safest fallback marker because the tool becomes active after M6.
+    tool_marker.loc[is_m6_event & (next_tool_from_m6 != "")] = next_tool_from_m6.loc[
+        is_m6_event & (next_tool_from_m6 != "")
+    ]
+    tool_marker.loc[(tool_marker == "") & raw_has_m6 & (t_from_raw != "")] = t_from_raw.loc[
+        (tool_marker == "") & raw_has_m6 & (t_from_raw != "")
+    ]
+
+    # Single-tool NC programs sometimes contain only T-code without M6.
+    # Use this only when no M6 marker exists in the program.
+    if not (tool_marker != "").any():
+        tool_marker.loc[t_from_raw != ""] = t_from_raw.loc[t_from_raw != ""]
+
+    work_df["tool_id_normalized"] = explicit_tool_id
+    missing_tool = work_df["tool_id_normalized"] == ""
+    work_df.loc[missing_tool, "tool_id_normalized"] = tool_marker.loc[missing_tool]
+
+    # Carry the active tool forward to later motion rows.
+    work_df["tool_id_normalized"] = (
+        work_df["tool_id_normalized"]
+        .replace("", pd.NA)
+        .ffill()
+        .fillna("")
+    )
+
+    work_df = work_df[work_df["tool_id_normalized"] != ""].copy()
+
+    if work_df.empty:
+        return pd.DataFrame()
+
+    cutting_mask = work_df.apply(_is_cutting_motion_row, axis=1)
+    cutting_df = work_df[cutting_mask].copy()
+
+    if cutting_df.empty:
+        return pd.DataFrame()
+
+    cutting_df["duration_s"] = pd.to_numeric(
+        cutting_df.get("duration_s", 0.0),
+        errors="coerce"
+    ).fillna(0.0).clip(lower=0.0)
+
+    cutting_df = cutting_df[cutting_df["duration_s"] > 0].copy()
+
+    if cutting_df.empty:
+        return pd.DataFrame()
+
+    return cutting_df.sort_values(["time", "line_number"]).reset_index(drop=True)
+
+
+def extract_cutting_tool_ids(df: pd.DataFrame) -> list:
+    """List tools that actually cut in the current NC program."""
+    cutting_df = _tool_life_cutting_rows(df)
+
+    if cutting_df.empty:
+        return []
+
+    tool_ids = sorted(
+        cutting_df["tool_id_normalized"].dropna().astype(str).unique().tolist(),
+        key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else x)
+    )
+
+    return tool_ids
+
+
+def build_tool_life_summary(
+    df: pd.DataFrame,
+    remaining_life_hours_by_tool: dict,
+    warning_ratio: float = 0.20,
+    critical_ratio: float = 0.10,
+) -> pd.DataFrame:
+    """
+    Summarize whether each tool has enough remaining life for this NC program.
+
+    The model consumes a manually entered remaining-life balance. It does not
+    estimate physical wear from tool material, workpiece material, coolant,
+    engagement or cutting-condition physics.
+    """
+    columns = [
+        "Tool",
+        "Remaining Before (h)",
+        "Cutting Time in Program (h)",
+        "Remaining After (h)",
+        "Life Used (%)",
+        "Remaining (%)",
+        "Status",
+        "Message",
+    ]
+
+    if not remaining_life_hours_by_tool:
+        return pd.DataFrame(columns=columns)
+
+    cutting_df = _tool_life_cutting_rows(df)
+
+    if cutting_df.empty:
+        rows = []
+        for tool_id, remaining_h in remaining_life_hours_by_tool.items():
+            tool = _normalize_tool_id(tool_id)
+            before_h = max(float(remaining_h or 0.0), 0.0)
+            rows.append({
+                "Tool": f"T{tool}" if tool else "Unknown",
+                "Remaining Before (h)": round(before_h, 4),
+                "Cutting Time in Program (h)": 0.0,
+                "Remaining After (h)": round(before_h, 4),
+                "Life Used (%)": 0.0,
+                "Remaining (%)": 100.0 if before_h > 0 else 0.0,
+                "Status": "SAFE" if before_h > 0 else "NOT SET",
+                "Message": "No cutting time detected for this tool",
+            })
+        return pd.DataFrame(rows, columns=columns)
+
+    used_s_by_tool = cutting_df.groupby("tool_id_normalized")["duration_s"].sum().to_dict()
+
+    rows = []
+    for tool_id, remaining_h in remaining_life_hours_by_tool.items():
+        tool = _normalize_tool_id(tool_id)
+        before_h = max(float(remaining_h or 0.0), 0.0)
+        before_s = before_h * 3600.0
+        used_s = float(used_s_by_tool.get(tool, 0.0))
+        used_h = used_s / 3600.0
+        after_s = before_s - used_s
+        after_h = after_s / 3600.0
+
+        if before_s <= 0:
+            used_pct = 0.0
+            remaining_pct = 0.0
+            status = "NOT SET"
+            message = "Enter remaining tool life before running the check"
+        else:
+            used_pct = used_s / before_s * 100.0
+            remaining_pct = after_s / before_s * 100.0
+
+            if after_s <= 0:
+                status = "FAIL"
+                message = "Tool life is not enough to complete this program"
+            elif after_s <= critical_ratio * before_s:
+                status = "CRITICAL"
+                message = f"Remaining life is below {critical_ratio:.0%} of entered life"
+            elif after_s <= warning_ratio * before_s:
+                status = "WARNING"
+                message = f"Remaining life is below {warning_ratio:.0%} of entered life"
+            else:
+                status = "SAFE"
+                message = "Tool can complete this program based on entered remaining life"
+
+        rows.append({
+            "Tool": f"T{tool}" if tool else "Unknown",
+            "Remaining Before (h)": round(before_h, 4),
+            "Cutting Time in Program (h)": round(used_h, 4),
+            "Remaining After (h)": round(after_h, 4),
+            "Life Used (%)": round(used_pct, 2),
+            "Remaining (%)": round(remaining_pct, 2),
+            "Status": status,
+            "Message": message,
+        })
+
+    status_order = {"FAIL": 0, "CRITICAL": 1, "WARNING": 2, "NOT SET": 3, "SAFE": 4}
+    result = pd.DataFrame(rows, columns=columns)
+    result["_order"] = result["Status"].map(status_order).fillna(9)
+    result = result.sort_values(["_order", "Tool"]).drop(columns=["_order"])
+    return result.reset_index(drop=True)
+
+
+def build_tool_life_warning_blocks(
+    df: pd.DataFrame,
+    remaining_life_hours_by_tool: dict,
+    warning_ratio: float = 0.20,
+    critical_ratio: float = 0.10,
+) -> pd.DataFrame:
+    """Find the first NC block where each tool crosses 20%, 10%, and 0% life."""
+    columns = [
+        "Tool",
+        "Level",
+        "Line",
+        "NC Block",
+        "Time (s)",
+        "Cumulative Cutting Time (h)",
+        "Remaining Life (h)",
+        "Threshold",
+    ]
+
+    if not remaining_life_hours_by_tool:
+        return pd.DataFrame(columns=columns)
+
+    cutting_df = _tool_life_cutting_rows(df)
+
+    if cutting_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+
+    for tool_id, remaining_h in remaining_life_hours_by_tool.items():
+        tool = _normalize_tool_id(tool_id)
+        before_h = max(float(remaining_h or 0.0), 0.0)
+        before_s = before_h * 3600.0
+
+        if tool == "" or before_s <= 0:
+            continue
+
+        tool_df = cutting_df[cutting_df["tool_id_normalized"] == tool].copy()
+
+        if tool_df.empty:
+            continue
+
+        tool_df = tool_df.sort_values(["time", "line_number"]).reset_index(drop=True)
+        tool_df["cumulative_cutting_s"] = tool_df["duration_s"].cumsum()
+        tool_df["remaining_s"] = before_s - tool_df["cumulative_cutting_s"]
+
+        threshold_specs = [
+            ("WARNING", warning_ratio * before_s, f"≤ {warning_ratio:.0%} remaining"),
+            ("CRITICAL", critical_ratio * before_s, f"≤ {critical_ratio:.0%} remaining"),
+            ("FAIL", 0.0, "≤ 0 remaining"),
+        ]
+
+        for level, threshold_s, threshold_label in threshold_specs:
+            crossed = tool_df[tool_df["remaining_s"] <= threshold_s]
+
+            if crossed.empty:
+                continue
+
+            row = crossed.iloc[0]
+            raw_line = str(row.get("raw_line", ""))
+            line_no = row.get("line_number", "")
+
+            try:
+                line_no = int(line_no)
+            except Exception:
+                pass
+
+            rows.append({
+                "Tool": f"T{tool}",
+                "Level": level,
+                "Line": line_no,
+                "NC Block": raw_line,
+                "Time (s)": round(float(row.get("time", 0.0)), 4),
+                "Cumulative Cutting Time (h)": round(float(row["cumulative_cutting_s"]) / 3600.0, 4),
+                "Remaining Life (h)": round(float(row["remaining_s"]) / 3600.0, 4),
+                "Threshold": threshold_label,
+            })
+
+    result = pd.DataFrame(rows, columns=columns)
+
+    if result.empty:
+        return result
+
+    level_order = {"FAIL": 0, "CRITICAL": 1, "WARNING": 2}
+    result["_order"] = result["Level"].map(level_order).fillna(9)
+    result = result.sort_values(["Tool", "_order", "Time (s)"]).drop(columns=["_order"])
+    return result.reset_index(drop=True)
+

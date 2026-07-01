@@ -184,46 +184,55 @@ html, body, [class*="css"] {
 [data-testid="stSidebarNav"]         { order: 1; }
 [data-testid="stSidebarUserContent"] { order: 2; }
 
-/* ── Logo injected into the stSidebarHeader (always order 0, above nav) ── */
+/* ── Sidebar Brand Header ── */
 [data-testid="stSidebarHeader"] {
     position: relative !important;
-    padding: 18px 20px 14px !important;
+    padding: 20px 22px 18px !important;
     border-bottom: 1px solid rgba(255,255,255,0.08) !important;
     flex-direction: column !important;
     align-items: flex-start !important;
     gap: 0 !important;
 }
-[data-testid="stLogoSpacer"] { display: none !important; }
+
+[data-testid="stLogoSpacer"] {
+    display: none !important;
+}
+
 [data-testid="stSidebarCollapseButton"] {
     position: absolute !important;
     right: 10px !important;
     top: 14px !important;
 }
+
 [data-testid="stSidebarHeader"]::before {
-    content: "CNC Digital Twin";
+    content: "CNC Manufacturing\\A Management System";
+    white-space: pre-line;
     display: block;
     font-family: 'Inter', -apple-system, sans-serif;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
+    font-size: 17px;
+    font-weight: 750;
+    letter-spacing: -0.035em;
     color: #ffffff;
-    line-height: 1.2;
+    line-height: 1.08;
+    max-width: 230px;
 }
+
 [data-testid="stSidebarHeader"]::after {
-    content: "SIMULATION SUITE";
+    content: "OFFLINE SIMULATION SUITE";
     display: block;
     font-family: 'Inter', -apple-system, sans-serif;
     font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.16em;
-    color: #3d567a;
-    margin-top: 3px;
+    letter-spacing: 0.18em;
+    color: #7eb8f0;
+    margin-top: 8px;
+    opacity: 0.85;
 }
 
 /* ── Nav ── */
 [data-testid="stSidebarNav"] {
     background: transparent;
-    padding: 0 8px 20px;
+    padding: 8px 8px 20px;
     border-bottom: 1px solid rgba(255,255,255,0.08);
     margin-bottom: 4px;
 }
@@ -236,7 +245,7 @@ html, body, [class*="css"] {
     letter-spacing: 0.16em;
     text-transform: uppercase;
     color: #3d567a;
-    padding: 10px 14px 8px;
+    padding: 8px 14px 8px;
 }
 [data-testid="stSidebarNav"] ul { padding: 0; margin: 0; gap: 2px; }
 [data-testid="stSidebarNavSeparator"] { display: none !important; }
@@ -510,7 +519,7 @@ html, body, [class*="css"] {
 [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button svg { display: none !important; }
 /* Inject text via ::after since SVG is hidden */
 [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button::before {
-    content: "↑  Upload .nc file";
+    content: "↑  Upload .nc files";
     font-size: 12px !important;
     font-weight: 600 !important;
     letter-spacing: 0.03em !important;
@@ -1117,11 +1126,17 @@ _FILE_SVG = (
 
 
 def render_sidebar(config: dict):
-    """Render sidebar controls and return (nc_files, selected_machine, cost_cfg, active_machine_cfg)."""
+    """Render sidebar controls and return (nc_files, selected_machine, cost_cfg, active_machine_cfg).
+
+    Behavior:
+    - Keeps uploaded NC files in session_state so they remain available across pages.
+    - Allows uploading several NC files at once and adding more files later.
+    - Keeps one global machine selection across Dashboard / Cycle Time / Faults / Costing / Optimize.
+    """
     with st.sidebar:
-        # ── Logo ──────────────────────────────────────────────────────────────
-        # ── NC Program ────────────────────────────────────────────────────────
         import html as _html
+
+        # ── NC Program ────────────────────────────────────────────────────────
         st.markdown(
             '<div style="padding:12px 20px 0;">'
             '<div style="font-size:9px;font-weight:700;letter-spacing:0.14em;'
@@ -1130,81 +1145,135 @@ def render_sidebar(config: dict):
             unsafe_allow_html=True,
         )
 
-        has_cache = bool(st.session_state.get(_NC_CACHE_KEY))
+        def _file_key(name: str, data: bytes) -> tuple:
+            # enough to prevent accidental duplicate append on Streamlit reruns
+            return (str(name), len(data), data[:64], data[-64:] if len(data) >= 64 else data)
 
-        if has_cache:
-            # ── File already loaded — hide native uploader, show card ─────────
-            st.markdown(
-                '<style>[data-testid="stSidebar"] [data-testid="stFileUploader"]'
-                '{display:none!important}</style>',
-                unsafe_allow_html=True,
+        def _cache_uploaded_files(uploaded_files, append: bool = False) -> bool:
+            if not uploaded_files:
+                return False
+
+            current_cache = list(st.session_state.get(_NC_CACHE_KEY, [])) if append else []
+            existing_keys = {
+                _file_key(item["name"], item["data"])
+                for item in current_cache
+            }
+
+            changed = False
+            for f in uploaded_files:
+                data = f.getvalue()
+                key = _file_key(f.name, data)
+                if key in existing_keys:
+                    continue
+                current_cache.append({"name": f.name, "data": data})
+                existing_keys.add(key)
+                changed = True
+
+            if changed:
+                st.session_state[_NC_CACHE_KEY] = current_cache
+
+            return changed
+
+        # If no cache exists, show the main multi-file uploader.
+        if not st.session_state.get(_NC_CACHE_KEY):
+            nc_files_raw = st.file_uploader(
+                "NC Program",
+                type=["nc", "txt", "tap", "cnc", "gcode"],
+                accept_multiple_files=True,
+                key="sb_nc_files",
+                label_visibility="collapsed",
             )
-            # Invisible uploader still needed for state key to exist
-            st.file_uploader(
-                "NC Program", accept_multiple_files=True,
-                key="sb_nc_files", label_visibility="collapsed",
-            )
+
+            if _cache_uploaded_files(nc_files_raw, append=False):
+                st.rerun()
+
+        # If files already exist, show all cards and allow adding more files.
+        if st.session_state.get(_NC_CACHE_KEY):
             nc_files = [
                 _CachedFile(c["name"], c["data"])
                 for c in st.session_state[_NC_CACHE_KEY]
             ]
-            # File info card
-            c = st.session_state[_NC_CACHE_KEY][0]
-            raw_txt = c["data"].decode("utf-8", errors="ignore")
-            block_count = sum(
-                1 for ln in raw_txt.splitlines()
-                if ln.strip() and not ln.strip().startswith(";") and not ln.strip().startswith("(")
+
+            # Display every uploaded file, not only the first one.
+            for idx, c in enumerate(st.session_state[_NC_CACHE_KEY], start=1):
+                raw_txt = c["data"].decode("utf-8", errors="ignore")
+                block_count = sum(
+                    1 for ln in raw_txt.splitlines()
+                    if ln.strip()
+                    and not ln.strip().startswith(";")
+                    and not ln.strip().startswith("(")
+                )
+                size_kb = len(c["data"]) / 1024
+                fname_safe = _html.escape(c["name"])
+
+                st.markdown(
+                    f'<div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);'
+                    f'border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;margin-bottom:6px;">'
+                    f'{_FILE_SVG}'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'<div style="color:#ffffff;font-size:13px;font-weight:600;'
+                    f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{idx}. {fname_safe}</div>'
+                    f'<div style="color:#7a94b0;font-size:11px;">{block_count:,} blocks · {size_kb:.0f} KB</div>'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+            # Add more files later without clearing existing cached files.
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            more_files = st.file_uploader(
+                "Add NC programs",
+                type=["nc", "txt", "tap", "cnc", "gcode"],
+                accept_multiple_files=True,
+                key="sb_nc_files_append",
+                label_visibility="collapsed",
             )
-            size_kb = len(c["data"]) / 1024
-            fname_safe = _html.escape(c["name"])
-            st.markdown(
-                f'<div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);'
-                f'border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px;">'
-                f'{_FILE_SVG}'
-                f'<div style="flex:1;min-width:0;">'
-                f'<div style="color:#ffffff;font-size:13px;font-weight:600;'
-                f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{fname_safe}</div>'
-                f'<div style="color:#7a94b0;font-size:11px;">{block_count:,} blocks · {size_kb:.0f} KB</div>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-            if st.button("↑ Change file", key="sb_change_file"):
-                st.session_state.pop(_NC_CACHE_KEY, None)
+
+            if _cache_uploaded_files(more_files, append=True):
                 st.rerun()
 
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            if st.button("↑ Change / clear NC files", key="sb_change_file"):
+                st.session_state.pop(_NC_CACHE_KEY, None)
+                st.session_state.pop("sb_nc_files", None)
+                st.session_state.pop("sb_nc_files_append", None)
+                st.rerun()
         else:
-            # ── No file yet — show native uploader ────────────────────────────
-            nc_files_raw = st.file_uploader(
-                "NC Program", accept_multiple_files=True,
-                key="sb_nc_files", label_visibility="collapsed",
-            )
-            if nc_files_raw:
-                st.session_state[_NC_CACHE_KEY] = [
-                    {"name": f.name, "data": f.getvalue()} for f in nc_files_raw
-                ]
-                st.rerun()   # rerun to switch to cached-file view
-            nc_files = nc_files_raw or []
+            nc_files = []
 
         # ── Machine ───────────────────────────────────────────────────────────
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         _sidebar_section("Machine")
+
         machine_ids = list(config["machines"].keys())
-        default_machine = config.get("active_machine_id", machine_ids[0])
-        if default_machine not in machine_ids:
-            default_machine = machine_ids[0]
+        global_machine_key = "global_machine_id"
+
+        if global_machine_key not in st.session_state:
+            default_machine = (
+                st.session_state.get("sb_machine")
+                or config.get("active_machine_id", machine_ids[0])
+            )
+            if default_machine not in machine_ids:
+                default_machine = machine_ids[0]
+            st.session_state[global_machine_key] = default_machine
+
+        # Make sure the remembered value is still valid.
+        if st.session_state[global_machine_key] not in machine_ids:
+            st.session_state[global_machine_key] = machine_ids[0]
 
         selected_machine = st.selectbox(
             "Machine",
             machine_ids,
-            index=machine_ids.index(default_machine),
-            key="sb_machine",
+            index=machine_ids.index(st.session_state[global_machine_key]),
+            key=global_machine_key,
             label_visibility="collapsed",
         )
 
+        # Backward-compatible alias for pages that still read sb_machine.
+        st.session_state["sb_machine"] = selected_machine
+
+    config["active_machine_id"] = selected_machine
     active_machine_cfg = config["machines"][selected_machine]
     return nc_files, selected_machine, get_cost_cfg(), active_machine_cfg
-
 
 def _sidebar_section(label: str):
     st.markdown(
